@@ -1,0 +1,7 @@
+{
+  "dependencies": {
+    "@penggy/easy-rtp-parser": "^1.0.2",
+    "is-rtp": "^2.0.0",
+    "speaker": "^0.5.4"
+  }
+}
