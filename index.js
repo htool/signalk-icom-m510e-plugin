@@ -136,7 +136,7 @@ module.exports = function (app) {
 		        break
 		    }
 		    app.debug('ServerC channel info (' + info.address + ':' + info.port + '): [' + msg.length + '] ' + msg.toString('hex'))
-		    activeChannelObj = getChannel(hex)
+        activeChannelObj = JSON.parse(JSON.stringify(getChannel(hex)))
 		    app.debug("activeChannelObj:  " + JSON.stringify(activeChannelObj))
 		  } 
       sendRadio()
@@ -349,7 +349,7 @@ module.exports = function (app) {
 		  }
 		
 		  // Channel enabled
-		  if (properties[offset+0] == 0) {
+		  if (properties[8] == 0) {
 		    channelTable[nr][mode]['enabled'] = true
 		  } else {
 		    channelTable[nr][mode]['enabled'] = false
@@ -499,52 +499,71 @@ module.exports = function (app) {
 		}
 		
 		function changeChannelTo (n) {
-		  //49 63 6f 6d 01 02 00 00 ca 01 a8 c0 99 01 a8 c0 01 00 00 00 08 00 00 00 03 00 00 00 01 00 1e 00
-		  //49 63 6f 6d 01 02 00 00 ca 01 a8 c0 99 01 a8 c0 01 00 00 00 08 00 00 00 02 00 00 00 01 00 21 00
-		  let chHex = ('0000'+(n).toString(16)).substr(-4)
-		  chHex = chHex[2] + chHex[3] + chHex[0] + chHex[1]
-		  msg = Buffer.from("49636f6d01020000ca01a8c09901a8c00100000008000000030000000100" + chHex, "hex")
-		  serverC.send(msg, 0, msg.length, 50003, radio.ip, function () {
-		    // app.debug('Change channel: n: ' + n + ' hex: ' + chHex + '  ' + msg.toString('hex'))
-		    activeChannelObj = getChannelInfoN(n)
-		  })
+		  let nr = Math.floor(n / 3)
+		  let r = n % 3
+      let mode = modeArray[r]
+      if (typeof channelTable[nr] != 'undefined') {
+        if (typeof channelTable[nr][mode] != 'undefined') {
+          if (typeof channelTable[nr][mode].enabled != 'undefined') {
+            if (channelTable[nr][mode].enabled == true) {
+      		    //49 63 6f 6d 01 02 00 00 ca 01 a8 c0 99 01 a8 c0 01 00 00 00 08 00 00 00 03 00 00 00 01 00 1e 00
+      		    //49 63 6f 6d 01 02 00 00 ca 01 a8 c0 99 01 a8 c0 01 00 00 00 08 00 00 00 02 00 00 00 01 00 21 00
+      		    let chHex = ('0000'+(n).toString(16)).substr(-4)
+      		    chHex = chHex[2] + chHex[3] + chHex[0] + chHex[1]
+      		    msg = Buffer.from("49636f6d01020000ca01a8c09901a8c00100000008000000030000000100" + chHex, "hex")
+      		    serverC.send(msg, 0, msg.length, 50003, radio.ip, function () {
+      		      // app.debug('Change channel: n: ' + n + ' hex: ' + chHex + '  ' + msg.toString('hex'))
+      		      activeChannelObj = JSON.parse(JSON.stringify(getChannelInfoN(n)))
+      		    })
+		          app.debug("changeChannelTo: activeChannelObj:  " + JSON.stringify(activeChannelObj))
+              return true
+            } else {
+              return false
+            }
+          }
+        }
+      }
 		}
 		
-		function changeChannelUp (channelObj) {
-		  app.debug("changeChannelUp")
-		  app.debug(channelObj)
-		  if (Number(channelObj.nr) >= 88) {
-		    channelObj = getChannelInfoN(2)
-		    app.debug(channelObj)
-		  }
+		function changeChannelUpDown (channelObj, direction) {
+		  app.debug("changeChannelUpDown")
+		  // app.debug(channelObj)
 		  var n = (channelObj.nr * 3) + modeArray.indexOf(channelObj.mode)
-		  var nr, r, enabled, fav, match
-		  var lookupWorks = true
-		  app.debug('n: ' + n)
-		  app.debug(channelObj)
+		  var nr, r, enabled, fav, match, lookupWorks
 		  do {
-		    n++
+		    if (n > 88*3) { 
+          n = 2 
+        } else if (n < 2) {
+          n = 88*3+1
+        }
+		    lookupWorks = false
+		    enabled = false
+        fav = false
+		    n = n + direction
 		    r = n % 3
 		    nr = Math.floor(n / 3)
-		    try {
-		      enabled = channelTable[nr][modeArray[r]].enabled
-		      fav = channelTable[nr][modeArray[r]].fav
-		      lookupWorks = true
-		    } catch {
-		      enabled = false
-		      lookupWorks = false
+        mode = modeArray[r]
+		    if (typeof channelTable[nr] != 'undefined') {
+          if (typeof channelTable[nr][mode] != 'undefined') {
+            if (typeof channelTable[nr][mode].enabled != 'undefined') {
+		          enabled = channelTable[nr][mode].enabled
+		          if (typeof channelTable[nr][mode].fav != 'undefined') {
+                fav = channelTable[nr][mode].fav
+		            lookupWorks = true
+              }
+            }
+          }
 		    }
-		    // app.debug('Finding next channel: nr: ' + nr + ' mode: ' + modeArray[r] + ' enabled: ' + enabled + ' fav: ' + fav)
+		    app.debug('Finding next channel: nr: ' + nr + ' mode: ' + modeArray[r] + ' enabled: ' + enabled + ' fav: ' + fav + ' lookupWorks: ' + lookupWorks)
 		    if (lookupWorks == true && fav == true && enabled == true ) {
 		      match = true
 		    } else {
 		      match = false
 		    }
-		    if (n >= 400) { n = 2 }
 		  } while (match == false)
 		  if (lookupWorks) {
 		    // app.debug('Next channel: ' + nr + ' ' + modeArray[r])
-		    changeChannelTo(n)
+		    return(changeChannelTo(n))
 		  } else {
 		    app.debug("Can't lookup yet")
 		  }
@@ -564,7 +583,7 @@ module.exports = function (app) {
 		function scanUp () {
 		  // app.debug('activeChannelObj: ' + JSON.stringify(activeChannelObj))
 		  if (!radio.busy) {
-		    changeChannelUp(activeChannelObj)
+		    changeChannelUpDown(activeChannelObj, 1)
 		    setTimeout(() => scanUp(), 200)
 		  }
 		}
@@ -603,7 +622,7 @@ module.exports = function (app) {
     }
 
     function sendChannel () {
-      app.debug('sendChannel: ' + activeChannelObj.properties + " " + JSON.stringify(activeChannelObj))
+      app.debug('sendChannel: ' + JSON.stringify(activeChannelObj))
       var values = []
       var path = 'communication.vhf'
       if (typeof activeChannelObj.nr != 'undefined') {
@@ -656,12 +675,39 @@ module.exports = function (app) {
       })
     }
 
+    plugin.registerWithRouter = function(router) {
+      // Will appear here; plugins/signalk-icom-m510e-plugin/
+      app.debug("registerWithRouter")
+      router.get("/:action/:nr", (req, res) => {
+        res.contentType("application/json")
+        if (ready) {
+          var action = req.params.action;
+          var nr = req.params.nr;
+          app.debug('api: action: ' + action + ' nr: ' + nr)
+          if (action == 'channel') {
+            if (nr == '+1') {
+              app.debug('Changing +1')
+              res.send(changeChannelUpDown(activeChannelObj, +1))
+            } else if (nr == '-1') {
+              app.debug('Changing -1')
+              res.send(changeChannelUpDown(activeChannelObj, -1))
+            } else {
+              app.debug('Changing to ' + nr)
+              let r = modeArray.indexOf(nr.substr(0,2))
+              let n = parseInt(nr.substr(2,2), 10) * 3 + r
+              res.send(changeChannelTo(n))
+            }
+          }
+        } else {
+          res.send('Not ready')
+        }
+      })
+    }
+
 		//setTimeout(() => app.debug(channelTable), 10000)
 		//setTimeout(() => scanUp(), 15000)
 		
-	
 	};
-
 
   plugin.stop = function () {
     // Here we put logic we need when the plugin stops

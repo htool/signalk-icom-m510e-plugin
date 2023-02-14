@@ -1,6 +1,6 @@
 {
   "name": "signalk-icom-m510e-plugin",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "Get active channel information and change channel over wlan.",
   "main": "index.js",
   "scripts": {
