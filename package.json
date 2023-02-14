@@ -1,5 +1,28 @@
 {
+  "name": "signalk-icom-m510e-plugin",
+  "version": "0.0.1",
+  "description": "Get active channel information and change channel over wlan.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/htool/signalk-icom-m510e-plugin.git"
+  },
+  "author": "hans@defect.org",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/htool/signalk-icom-m510e-plugin/issues"
+  },
+  "homepage": "https://github.com/htool/signalk-icom-m510e-plugin#readme",
+  "keywords": [
+    "signalk-node-server-plugin",
+    "signalk-category-instruments",
+    "signalk-category-hardware"
+  ],
   "dependencies": {
+    "lodash": "^4.17.21",
     "@penggy/easy-rtp-parser": "^1.0.2",
     "is-rtp": "^2.0.0",
     "speaker": "^0.5.4"
