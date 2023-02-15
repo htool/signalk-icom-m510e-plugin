@@ -1,6 +1,6 @@
 const util = require('util')
 const _ = require('lodash')
-const Speaker = require('speaker');
+// const Speaker = require('speaker');
 const regex_fav =        /49636f6d010000009........................90000000[012]000000....0.00[0246]./g
 const regex_name =       /49636f6d010000009101a8c01901a8c000060000e40000000000000/g
 const regex_properties = /49636f6d010000009[12]01a8c01901a8c000050000d00000000/g
@@ -71,12 +71,14 @@ module.exports = function (app) {
     app.debug ('%j', globalOptions)
 
 	
+    /*
 		// Create the Speaker instance
 		const speaker = new Speaker({
 		  channels: 1,          // 2 channels
 		  bitDepth: 16,         // 16-bit samples
 		  sampleRate: 8000     // 8000 Hz sample rate
 		})
+    */
 		
 		
 		serverA.on('message',function(msg,info){
@@ -173,7 +175,7 @@ module.exports = function (app) {
 		serverVoice.on('message',function(msg,info) {
 		  const hex = Array.from(msg)
 		  app.debug('serverVoice (' + info.address + ':' + info.port + '): ' + msg.toString('hex'))
-		  msg.pipe(speaker)
+		  // msg.pipe(speaker)
 		})
 		
 		function updateChannelFav (hex) {
@@ -283,7 +285,7 @@ module.exports = function (app) {
 		      // app.debug(rtp);
 		      var bKeyframe = RTPParser.isKeyframeStart(rtp.payload);
 		      // app.debug(`key frame : ${bKeyframe}`);
-		      speaker.write(Buffer.from(rtp.payload))
+		      // speaker.write(Buffer.from(rtp.payload))
 		    }
 		    // app.debug('Voice (' + info.address + ':' + info.port + '): ' + msgString)
 		    //app.debug('Voice (' + info.address + ':' + info.port + '): ' + wav.toString('hex'))
