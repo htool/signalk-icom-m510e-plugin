@@ -21,9 +21,9 @@ communication.vhf.ip        string      IP address of Icom M510E
 The following api calls can be made
 
 ```
-/plugins/signalk-icom-m510e-plugin/channel/<n>
+curl -H "Content-Type: application/json" -X PUT http://localhost:3000/signalk/v1/api/vessels/self/communication/vhf/channel -d '{"value": "+1"}'
 ```
-where `n` is `-1` for channel down, `+1` for channel up or a channel number in 4 characters, e.g. `2019` or `0001`.
+where `value` is `-1` for channel down, `+1` for channel up or a channel number in 4 characters, e.g. `2019` or `0001`.
 
 ## NMEA2000 / CT-M500
 

@@ -677,33 +677,31 @@ module.exports = function (app) {
       })
     }
 
-    plugin.registerWithRouter = function(router) {
-      // Will appear here; plugins/signalk-icom-m510e-plugin/
-      app.debug("registerWithRouter")
-      router.get("/:action/:nr", (req, res) => {
-        res.contentType("application/json")
-        if (ready) {
-          var action = req.params.action;
-          var nr = req.params.nr;
-          app.debug('api: action: ' + action + ' nr: ' + nr)
-          if (action == 'channel') {
-            if (nr == '+1') {
-              app.debug('Changing +1')
-              res.send(changeChannelUpDown(activeChannelObj, +1))
-            } else if (nr == '-1') {
-              app.debug('Changing -1')
-              res.send(changeChannelUpDown(activeChannelObj, -1))
-            } else {
-              app.debug('Changing to ' + nr)
-              let r = modeArray.indexOf(nr.substr(0,2))
-              let n = parseInt(nr.substr(2,2), 10) * 3 + r
-              res.send(changeChannelTo(n))
-            }
-          }
+    app.registerPutHandler('vessels.self', 'communication.vhf.channel', apiChangeChannel, 'somesource.1');
+
+    function apiChangeChannel (context, path, value, callback) {
+      var statusCode
+      app.debug("context: " + context + " path: " + path + " value: " + value)
+      if (ready) {
+        if (value == '+1') {
+          app.debug('Changing +1')
+          changeChannelUpDown(activeChannelObj, +1)
+          statusCode = 200
+        } else if (value == '-1') {
+          app.debug('Changing -1')
+          changeChannelUpDown(activeChannelObj, -1)
+          statusCode = 200
         } else {
-          res.send('Not ready')
+          app.debug('Changing to ' + value)
+          let r = modeArray.indexOf(value.toString(10).substr(0,2))
+          let n = parseInt(value.toString(10).substr(2,2), 10) * 3 + r
+          changeChannelTo(n)
+          statusCode = 200
         }
-      })
+      } else {
+        statusCode = 400
+      }
+      callback({state: 'COMPLETED', statusCode: statusCode})
     }
 
 		//setTimeout(() => app.debug(channelTable), 10000)
