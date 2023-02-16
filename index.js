@@ -1,12 +1,14 @@
 const util = require('util')
 const _ = require('lodash')
 // const Speaker = require('speaker');
-const regex_fav =        /49636f6d010000009........................90000000[012]000000....0.00[0246]./g
-const regex_name =       /49636f6d010000009101a8c01901a8c000060000e40000000000000/g
-const regex_properties = /49636f6d010000009[12]01a8c01901a8c000050000d00000000/g
-const regex_update =     /49636f6d010000009[12]01a8c01901a8c00102000010000000....bd003000bd000205..00..000000/g
+const regex_fav =        /49636f6d01000000.........................90000000[012]000000....0.00[0246]./g
+const regex_name =       /49636f6d01000000...............000060000e40000000000000/g
+const regex_properties = /49636f6d01000000...............00050000d00000000/g
+const regex_update =     /49636f6d01000000...............0102000010000000....bd003000bd000205..00..000000/g
+//                                        ^-hex ip src dst - seem to be ignored
 const is_rtp = require('is-rtp')
 const RTPParser = require('@penggy/easy-rtp-parser');
+const ip = require('ip');
 
 var globalOptions = []
 
@@ -45,6 +47,12 @@ module.exports = function (app) {
     app.debug('Plugin started');
     var unsubscribes = [];
 		var udp = require('dgram');
+    var myIP = ip.address()
+    var myIPHex = ip2hex(myIP)
+    var broadcastIP = '255.255.255.255'
+    var broadcastIPHex = ip2hex(broadcastIP)
+    var icomHex = "49636f6d"
+    var RS_M500Hex = "52532d4d353030"
 		var serverA = udp.createSocket('udp4');
 		var serverB = udp.createSocket('udp4');
 		var serverC = udp.createSocket('udp4');
@@ -55,6 +63,7 @@ module.exports = function (app) {
 		var findRadioTimer
     var sendSilenceTimer
 		var keepAliveTimer = false
+    var scanTimer
 		var listenPortA 
 		var listenPortB 
 		var listenPortC 
@@ -73,6 +82,14 @@ module.exports = function (app) {
     globalOptions = options;
     app.debug ('%j', globalOptions)
 
+    function ip2hex (ip) {
+      app.debug(ip)
+      var hex = []
+      ip.split('.').forEach(n => {
+        hex.push(("00" + parseInt(n).toString(16)).substr(-2,2))
+      })
+      return hex[3]+hex[2]+hex[1]+hex[0]
+    }
 	
     /*
 		// Create the Speaker instance
@@ -464,20 +481,9 @@ module.exports = function (app) {
 		function broadcastNew() {
 		  var hex = listenPortA.toString(16)
 		  hex = hex[2]+hex[3]+hex[0]+hex[1]
-		  var broadcastMsg = Buffer.from("49636f6d01ff0000b901a8c0ffffffff0000000004000000" + hex + "0000", "hex")
-		  serverA.send(broadcastMsg, 0, broadcastMsg.length, 50000, '255.255.255.255', function() {
+		  var broadcastMsg = Buffer.from(icomHex + "01ff0000" + myIPHex + broadcastIPHex + "0000000004000000" + hex + "0000", "hex")
+		  serverA.send(broadcastMsg, 0, broadcastMsg.length, 50000, broadcastIP, function() {
 		    app.debug("Broadbast sent '" + broadcastMsg + "'");
-		    app.debug(broadcastMsg)
-		  })
-		}
-
-		function broadcastCT() {
-      var CTport = 60000
-		  var hex = CTport.toString(16)
-		  hex = hex[2]+hex[3]+hex[0]+hex[1]
-		  var broadcastMsg = Buffer.from("49636f6d01ff0000b901a8c0ffffffff0000000004000000" + hex + "0000", "hex")
-		  serverA.send(broadcastMsg, 0, broadcastMsg.length, 50000, '255.255.255.255', function() {
-		    app.debug("CT Broadbast sent '" + broadcastMsg + "'");
 		    app.debug(broadcastMsg)
 		  })
 		}
@@ -490,8 +496,8 @@ module.exports = function (app) {
 		}
 		
 		function requestChannels (ip, port, nr) {
-		  var msg1 = Buffer.from("49636f6d01020000ca01a8c09901a8c0000400000400000000000000", "hex")
-		  var msg2 = Buffer.from("49636f6d01020000ca01a8c09901a8c000040000020000000100", "hex")
+		  var msg1 = Buffer.from(icomHex + "01020000" + myIPHex + ip2hex(radio.ip) + "000400000400000000000000", "hex")
+		  var msg2 = Buffer.from(icomHex + "01020000" + myIPHex + ip2hex(radio.ip) + "00040000020000000100", "hex")
 		 
 		  if (nr == 1) {
 		    msg = msg1
@@ -513,26 +519,9 @@ module.exports = function (app) {
 		  portDhex = portDhex[2]+portDhex[3]+portDhex[0]+portDhex[1]
 		  var portVoicehex = portVoice.toString(16)
 		  portVoicehex = portVoicehex[2]+portVoicehex[3]+portVoicehex[0]+portVoicehex[1]
-		  var signIn = Buffer.from("49636f6d01ff0000ca01a8c09901a8c000020000380000000200" + portDhex + portVoicehex + portBhex + portChex + "2ab052532d4d35303000000042134195000000000000000000000000000000000000000000000000000000000000", "hex")
+		  var signIn = Buffer.from(icomHex + "01ff0000" + myIPHex + ip2hex(radio.ip) + "00020000380000000200" + portDhex + portVoicehex + portBhex + portChex + "2ab0" + RS_M500Hex + "00000042134195000000000000000000000000000000000000000000000000000000000000", "hex")
 		  serverA.send(signIn, 0, signIn.length, port, ip, function() {
 		    app.debug("Sending SignIn to use portB:" + portB + " portC:" + portC)
-		    app.debug(signIn.toString('utf-8'))
-		  })
-		}
-
-		function sendSignInCT (ip, port, portB, portC, portD, portVoice) {
-		  var portBhex = portB.toString(16)
-		  portBhex = portBhex[2]+portBhex[3]+portBhex[0]+portBhex[1]
-		  var portChex = portC.toString(16)
-		  portChex = portChex[2]+portChex[3]+portChex[0]+portChex[1]
-		  var portDhex = portD.toString(16)
-		  portDhex = portDhex[2]+portDhex[3]+portDhex[0]+portDhex[1]
-		  var portVoicehex = portVoice.toString(16)
-		  portVoicehex = portVoicehex[2]+portVoicehex[3]+portVoicehex[0]+portVoicehex[1]
-		  // var signIn = Buffer.from("49636f6d01ff0000ca01a8c09901a8c000020000380000000200" + portDhex + portVoicehex + portBhex + portChex + "2ab043542D4D35303000000042134195000000000000000000000000000000000000000000000000000000000000", "hex")
-		  var signIn = Buffer.from("49636f6d01ff0000ca01a8c09901a8c000000000380000000000" + portDhex + portVoicehex + portBhex + portChex + "2ab043542D4D35303000000042134195000000000000000000000000000000000000000000000000000000000000", "hex")
-		  serverA.send(signIn, 0, signIn.length, port, ip, function() {
-		    app.debug("Sending CT SignIn to use portB:" + portB + " portC:" + portC)
 		    app.debug(signIn.toString('utf-8'))
 		  })
 		}
@@ -549,7 +538,7 @@ module.exports = function (app) {
       		    //49 63 6f 6d 01 02 00 00 ca 01 a8 c0 99 01 a8 c0 01 00 00 00 08 00 00 00 02 00 00 00 01 00 21 00
       		    let chHex = ('0000'+(n).toString(16)).substr(-4)
       		    chHex = chHex[2] + chHex[3] + chHex[0] + chHex[1]
-      		    msg = Buffer.from("49636f6d01020000ca01a8c09901a8c00100000008000000030000000100" + chHex, "hex")
+      		    msg = Buffer.from(icomHex + "01020000" + myIPHex + ip2hex(radio.ip) + "0100000008000000030000000100" + chHex, "hex")
       		    serverC.send(msg, 0, msg.length, 50003, radio.ip, function () {
       		      // app.debug('Change channel: n: ' + n + ' hex: ' + chHex + '  ' + msg.toString('hex'))
       		      activeChannelObj = JSON.parse(JSON.stringify(getChannelInfoN(n)))
@@ -564,7 +553,7 @@ module.exports = function (app) {
       }
 		}
 		
-		function changeChannelUpDown (channelObj, direction) {
+		function changeChannelUpDown (channelObj, direction, favOnly) {
 		  app.debug("changeChannelUpDown")
 		  // app.debug(channelObj)
 		  var n = (channelObj.nr * 3) + modeArray.indexOf(channelObj.mode)
@@ -593,10 +582,12 @@ module.exports = function (app) {
             }
           }
 		    }
-		    app.debug('Finding next channel: nr: ' + nr + ' mode: ' + modeArray[r] + ' enabled: ' + enabled + ' fav: ' + fav + ' lookupWorks: ' + lookupWorks)
-		    if (lookupWorks == true && fav == true && enabled == true ) {
+		    app.debug('Finding next channel: favOnly: ' + JSON.stringify(favOnly) + ' nr: ' + nr + ' mode: ' + modeArray[r] + ' enabled: ' + enabled + ' fav: ' + fav + ' lookupWorks: ' + lookupWorks)
+		    if (favOnly == true && lookupWorks == true && fav == true && enabled == true ) {
 		      match = true
-		    } else {
+		    } else if (favOnly == false && lookupWorks == true && enabled == true ) {
+		      match = true
+        } else {
 		      match = false
 		    }
 		  } while (match == false)
@@ -609,34 +600,34 @@ module.exports = function (app) {
 		}
 		
 		function askChannel () {
-		  var msg = Buffer.from("49636f6d01020000ca01a8c09901a8c00103000000000000", "hex")
+		  var msg = Buffer.from(icomHex + "01020000" + myIPHex + ip2hex(radio.ip) + "0103000000000000", "hex")
 		  serverC.send(msg, 0, msg.length, 50003, radio.ip, function () {
 		    app.debug("Sending askChannel")
 		  })
-		  var msg = Buffer.from("49636f6d01020000ca01a8c09901a8c00102000000000000", "hex")
+		  var msg = Buffer.from(icomHex + "01020000" + myIPHex + ip2hex(radio.ip) + "0102000000000000", "hex")
 		  serverC.send(msg, 0, msg.length, 50003, radio.ip, function () {
 		    app.debug("Sending askChannel")
 		  })
 		}
-		
-		function scanUp () {
+
+		function scanUp (favOnly) {
 		  // app.debug('activeChannelObj: ' + JSON.stringify(activeChannelObj))
-		  if (!radio.busy) {
-		    changeChannelUpDown(activeChannelObj, 1)
-		    setTimeout(() => scanUp(), 200)
+		  if (!radio.busy && favOnly != -1) {
+		    changeChannelUpDown(activeChannelObj, 1, favOnly)
+		    scanTimer = setTimeout(() => scanUp(favOnly), 200)
 		  }
 		}
-		
+
 		function squelch (level) {
-		  // 49636f6d010000009101a8c01901a8c001020000100000000203bd003000bd000205050007000000
-		  // 49636f6d010000009101a8c01901a8c001020000100000000203bd003000bd000205010007000000
+		  // icomHex + "010000009101a8c01901a8c001020000100000000203bd003000bd000205050007000000
+		  // icomHex + "010000009101a8c01901a8c001020000100000000203bd003000bd000205010007000000
 		  let levelHex = ("00" + level.toString(16)).substr(-2);
-		  var msg = Buffer.from("49636f6d010000009102a8c01901a8c001020000100000000203bd003000bd000205" + levelHex + "0007000000", "hex")
+		  var msg = Buffer.from(icomHex + "01000000" + myIPHex + ip2hex(radio.ip) + "01020000100000000203bd003000bd000205" + levelHex + "0007000000", "hex")
 		  serverC.send(msg, 0, msg.length, 50003, radio.ip, function () {
 		    app.debug("Sending squelch msg " + msg.toString('hex'))
 		  })
 		}
-		
+
     function sendRadio () {
       app.debug('sendRadio: ' + JSON.stringify(radio))
       var values = []
@@ -647,9 +638,6 @@ module.exports = function (app) {
       }
       if (typeof radio.status != 'undefined') {
         values.push({path: path + '.status', value: radio.status})
-      }
-      if (typeof radio.squelch != 'undefined') {
-        values.push({path: path + '.squelch', value: radio.squelch})
       }
       if (typeof radio.busy != 'undefined') {
         values.push({path: path + '.busy', value: radio.busy})
@@ -689,6 +677,12 @@ module.exports = function (app) {
       if (radio.status == "online") {
         values.push({path: path + '.silence', value: silence})
       } 
+      if (typeof radio.squelch != 'undefined') {
+        values.push({path: path + '.squelch', value: radio.squelch})
+      }
+      if (typeof activeChannelObj.nr != 'undefined') {
+        values.push({path: path + '.channel', value: activeChannelObj.nr})
+      }
       values.push({path: path + '.status', value: radio.status})
       app.handleMessage(plugin.id, {
         updates: [
@@ -760,13 +754,25 @@ module.exports = function (app) {
       var r, n
       app.debug("context: " + context + " path: " + path + " value: " + value)
       if (radio.status == 'online') {
-        if (value == '+1') {
+        if (value == 'scanStop') {
+          app.debug('Scanning stop')
+          clearTimeout(scanTimer)
+          statusCode = 200
+        } else if (value == 'scanAll') {
+          app.debug('Scanning all channels')
+          setTimeout(() => scanUp(0), 10)
+          statusCode = 200
+        } else if (value == 'scanFav') {
+          app.debug('Scanning favourite channels')
+          setTimeout(() => scanUp(1), 10)
+          statusCode = 200
+        } else if (value == '+1') {
           app.debug('Changing +1')
-          changeChannelUpDown(activeChannelObj, +1)
+          changeChannelUpDown(activeChannelObj, +1, false)
           statusCode = 200
         } else if (value == '-1') {
           app.debug('Changing -1')
-          changeChannelUpDown(activeChannelObj, -1)
+          changeChannelUpDown(activeChannelObj, -1, false)
           statusCode = 200
         } else {
           app.debug('Changing to ' + value)
@@ -787,7 +793,6 @@ module.exports = function (app) {
     }
 
 		//setTimeout(() => app.debug(channelTable), 10000)
-		//setTimeout(() => scanUp(), 15000)
 		// setInterval(() => broadcastCT(), 5000)
 		// setInterval(() => sendSignInCT('192.168.1.145', 60000, 60001, 60002, 60003, 60004), 5500)
 		
