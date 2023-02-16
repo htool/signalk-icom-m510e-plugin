@@ -51,9 +51,9 @@ module.exports = function (app) {
 		var serverD = udp.createSocket('udp4');
 		var serverVoice = udp.createSocket('udp4');
 		var modeArray = ['00', '10', '20']
-		var radio = {busy: false}
-		var ready = false
+		var radio = {busy: false, status: "offline"}
 		var findRadioTimer
+    var sendSilenceTimer
 		var keepAliveTimer = false
 		var listenPortA 
 		var listenPortB 
@@ -66,6 +66,9 @@ module.exports = function (app) {
 		var propertiesHex
 		var activeChannelObj = {}
 		var header
+    var startSilence
+    var onlineTimestamp = Date.now()
+    var online = false
 
     globalOptions = options;
     app.debug ('%j', globalOptions)
@@ -90,6 +93,7 @@ module.exports = function (app) {
 		    // app.debug(msg.toString('hex') + " " + msg.toString('utf-8'))
 		    header = msg.slice(0,17).toString('hex')
 		    app.debug('Header: ' + header)
+        radio.status = 'initializing'
         sendRadio(radio)
 		    sendSignIn(radio.ip, radio.port, listenPortB, listenPortC, listenPortD, listenPortVoice)
 		  } else {
@@ -101,6 +105,7 @@ module.exports = function (app) {
 		})
 		
 		serverB.on('message',function(msg,info) {
+      onlineTimestamp = Date.now()
 		  app.debug('ServerB (' + info.address + ':' + info.port + '): ' + msg.toString('hex') + " " + msg.toString('utf-8'))
 		  if (!keepAliveTimer) {
 		    app.debug('Starting keepalive')
@@ -115,6 +120,7 @@ module.exports = function (app) {
 		})
 		
 		serverC.on('message',function(msg,info) {
+      onlineTimestamp = Date.now()
 		  const hex = Array.from(msg)
 		  let msgString = msg.toString('hex')
 		  if (msg.length == 28) {
@@ -133,6 +139,7 @@ module.exports = function (app) {
 		      case 0:
             if (radio.busy == true) {
 		          radio.busy = false
+              startSilence = Date.now()
               sendRadio()
             }
 		        break
@@ -276,7 +283,9 @@ module.exports = function (app) {
 		      chunk = chunk.slice(11)
 		    }
 		    if (startValue == 520) {
-		      ready = true
+		      radio.status = 'online'
+          startSilence = Date.now()
+		      sendSilenceTimer = setInterval(() => sendSilence(), 1000)
 		      //sendChannelTable()
 		    }
 		  } else if (msgString.startsWith('8000')) {
@@ -451,7 +460,7 @@ module.exports = function (app) {
 		  app.debug("Client using voice port " + address.port)
 		  listenPortVoice = address.port
 		})
-		
+
 		function broadcastNew() {
 		  var hex = listenPortA.toString(16)
 		  hex = hex[2]+hex[3]+hex[0]+hex[1]
@@ -461,7 +470,18 @@ module.exports = function (app) {
 		    app.debug(broadcastMsg)
 		  })
 		}
-		
+
+		function broadcastCT() {
+      var CTport = 60000
+		  var hex = CTport.toString(16)
+		  hex = hex[2]+hex[3]+hex[0]+hex[1]
+		  var broadcastMsg = Buffer.from("49636f6d01ff0000b901a8c0ffffffff0000000004000000" + hex + "0000", "hex")
+		  serverA.send(broadcastMsg, 0, broadcastMsg.length, 50000, '255.255.255.255', function() {
+		    app.debug("CT Broadbast sent '" + broadcastMsg + "'");
+		    app.debug(broadcastMsg)
+		  })
+		}
+
 		function keepAlive (ip, port) {
 		  var keepAliveMsg = Buffer.from("8001004", "hex")
 		  serverB.send(keepAliveMsg, 0, keepAliveMsg.length, port, ip, function() {
@@ -483,7 +503,7 @@ module.exports = function (app) {
 		  })
 		  channelTable.requested = true
 		}
-		
+
 		function sendSignIn (ip, port, portB, portC, portD, portVoice) {
 		  var portBhex = portB.toString(16)
 		  portBhex = portBhex[2]+portBhex[3]+portBhex[0]+portBhex[1]
@@ -499,7 +519,24 @@ module.exports = function (app) {
 		    app.debug(signIn.toString('utf-8'))
 		  })
 		}
-		
+
+		function sendSignInCT (ip, port, portB, portC, portD, portVoice) {
+		  var portBhex = portB.toString(16)
+		  portBhex = portBhex[2]+portBhex[3]+portBhex[0]+portBhex[1]
+		  var portChex = portC.toString(16)
+		  portChex = portChex[2]+portChex[3]+portChex[0]+portChex[1]
+		  var portDhex = portD.toString(16)
+		  portDhex = portDhex[2]+portDhex[3]+portDhex[0]+portDhex[1]
+		  var portVoicehex = portVoice.toString(16)
+		  portVoicehex = portVoicehex[2]+portVoicehex[3]+portVoicehex[0]+portVoicehex[1]
+		  // var signIn = Buffer.from("49636f6d01ff0000ca01a8c09901a8c000020000380000000200" + portDhex + portVoicehex + portBhex + portChex + "2ab043542D4D35303000000042134195000000000000000000000000000000000000000000000000000000000000", "hex")
+		  var signIn = Buffer.from("49636f6d01ff0000ca01a8c09901a8c000000000380000000000" + portDhex + portVoicehex + portBhex + portChex + "2ab043542D4D35303000000042134195000000000000000000000000000000000000000000000000000000000000", "hex")
+		  serverA.send(signIn, 0, signIn.length, port, ip, function() {
+		    app.debug("Sending CT SignIn to use portB:" + portB + " portC:" + portC)
+		    app.debug(signIn.toString('utf-8'))
+		  })
+		}
+
 		function changeChannelTo (n) {
 		  let nr = Math.floor(n / 3)
 		  let r = n % 3
@@ -608,12 +645,51 @@ module.exports = function (app) {
         values.push({path: path + '.ip', value: radio.ip})
         values.push({path: path + '.port', value: radio.port})
       }
+      if (typeof radio.status != 'undefined') {
+        values.push({path: path + '.status', value: radio.status})
+      }
       if (typeof radio.squelch != 'undefined') {
         values.push({path: path + '.squelch', value: radio.squelch})
       }
       if (typeof radio.busy != 'undefined') {
         values.push({path: path + '.busy', value: radio.busy})
       }
+      app.handleMessage(plugin.id, {
+        updates: [
+          {
+            values: values
+          }
+        ]
+      })
+    }
+
+    function sendSilence() {
+      var silence = Math.floor(((Date.now() - startSilence)/1000))
+      if (Date.now() - onlineTimestamp < 10000) {
+        app.debug('sendSilence: alive sign')
+        if (radio.status == 'initializing') {
+          startSilence = Date.now()
+          silence = 0
+        }
+        radio.status = 'online'
+      } else {
+        app.debug('sendSilence: no alive sign')
+        if (radio.status == 'online') {
+          silence = -1
+          radio.status = 'offline'
+          activeChannelObj = {}
+          channelTable.requested = false
+          findRadioTimer = setInterval(broadcastNew, 1000);
+          clearInterval(sendSilenceTimer)
+        }
+      }
+      app.debug('sendSilence: ' + silence + ' radio.status: ' + radio.status)
+      var values = []
+      var path = 'communication.vhf'
+      if (radio.status == "online") {
+        values.push({path: path + '.silence', value: silence})
+      } 
+      values.push({path: path + '.status', value: radio.status})
       app.handleMessage(plugin.id, {
         updates: [
           {
@@ -681,8 +757,9 @@ module.exports = function (app) {
 
     function apiChangeChannel (context, path, value, callback) {
       var statusCode
+      var r, n
       app.debug("context: " + context + " path: " + path + " value: " + value)
-      if (ready) {
+      if (radio.status == 'online') {
         if (value == '+1') {
           app.debug('Changing +1')
           changeChannelUpDown(activeChannelObj, +1)
@@ -693,8 +770,13 @@ module.exports = function (app) {
           statusCode = 200
         } else {
           app.debug('Changing to ' + value)
-          let r = modeArray.indexOf(value.toString(10).substr(0,2))
-          let n = parseInt(value.toString(10).substr(2,2), 10) * 3 + r
+          if (value.length == 4) {
+            r = modeArray.indexOf(value.toString(10).substr(0,2))
+            n = parseInt(value.toString(10).substr(2,2), 10) * 3 + r
+          } else {
+            r = 0
+            n = parseInt(("00" + value.toString(10)).substr(2,2), 10) * 3 + r
+          }
           changeChannelTo(n)
           statusCode = 200
         }
@@ -706,6 +788,8 @@ module.exports = function (app) {
 
 		//setTimeout(() => app.debug(channelTable), 10000)
 		//setTimeout(() => scanUp(), 15000)
+		// setInterval(() => broadcastCT(), 5000)
+		// setInterval(() => sendSignInCT('192.168.1.145', 60000, 60001, 60002, 60003, 60004), 5500)
 		
 	};
 
