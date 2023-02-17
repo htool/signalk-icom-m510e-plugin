@@ -680,9 +680,7 @@ module.exports = function (app) {
       if (typeof radio.squelch != 'undefined') {
         values.push({path: path + '.squelch', value: radio.squelch})
       }
-      if (typeof activeChannelObj.nr != 'undefined') {
-        values.push({path: path + '.channel', value: activeChannelObj.nr})
-      }
+      values.push({path: path + '.channel', value: channelString()})
       values.push({path: path + '.status', value: radio.status})
       app.handleMessage(plugin.id, {
         updates: [
@@ -693,20 +691,25 @@ module.exports = function (app) {
       })
     }
 
+    function channelString() {
+      if (typeof activeChannelObj.nr != 'undefined') {
+        if (typeof activeChannelObj.mode != 'undefined') {
+          if (activeChannelObj.mode == "00") {
+            return activeChannelObj.nr.toString()
+          } else {
+            return activeChannelObj.mode + ("00" + activeChannelObj.nr.toString()).substr(-2)
+          }
+        }
+      } else {
+        return ""
+      }
+    }
+
     function sendChannel () {
       app.debug('sendChannel: ' + JSON.stringify(activeChannelObj))
       var values = []
       var path = 'communication.vhf'
-      if (typeof activeChannelObj.nr != 'undefined') {
-        if (typeof activeChannelObj.mode != 'undefined') {
-          if (activeChannelObj.mode == "00") {
-            values.push({path: path + '.channel', value: activeChannelObj.nr.toString()})
-          } else {
-            let channel = activeChannelObj.mode + ("00" + activeChannelObj.nr.toString()).substr(-2)
-            values.push({path: path + '.channel', value: channel})
-          }
-        }
-      }
+      values.push({path: path + '.channel', value: channelString()})
       if (typeof activeChannelObj.watt != 'undefined') {
         values.push({path: path + '.watt', value: activeChannelObj.watt})
       }
