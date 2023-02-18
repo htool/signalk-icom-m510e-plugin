@@ -1,18 +1,16 @@
 const util = require('util')
 const _ = require('lodash')
 // const Speaker = require('speaker');
-const regex_fav =        /49636f6d01000000.........................90000000[012]000000....0.00[0246]./g
-const regex_name =       /49636f6d01000000...............000060000e40000000000000/g
-const regex_properties = /49636f6d01000000...............00050000d00000000/g
-const regex_update =     /49636f6d01000000...............0102000010000000....bd003000bd000205..00..000000/g
+const regex_fav =        /49636f6d01000000.........................90000000[012]000000....0.00[0246]./gi
+const regex_name =       /49636f6d01000000...............000060000e40000000.00000/gi
+const regex_properties = /49636f6d01000000...............000050000d00000000/gi
+const regex_update =     /49636f6d01000000...............0102000010000000....bd003000bd000205..00..000000/gi
 //                                        ^-hex ip src dst - seem to be ignored
 const is_rtp = require('is-rtp')
 const RTPParser = require('@penggy/easy-rtp-parser');
 const ip = require('ip');
 
 var globalOptions = []
-
-
 
 module.exports = function (app) {
   var plugin = {}
@@ -26,9 +24,15 @@ module.exports = function (app) {
   var schema = {
     // The plugin schema
     properties: {
-      'null': {
-        'title': 'Set new names for data types',
-        'type': 'null',
+      follow: {
+        title: 'Follow the channel published on this path',
+        default: 'resources.vhf.nearest.0',
+        type: 'string'
+      },
+      silence: {
+        title: 'Silence time in seconds before changing channel',
+        default: 30,
+        type: 'number'
       },
     }
   }
@@ -49,10 +53,17 @@ module.exports = function (app) {
 		var udp = require('dgram');
     var myIP = ip.address()
     var myIPHex = ip2hex(myIP)
+    var radioIPhex = ""
+    var radioPorthex = ""
     var broadcastIP = '255.255.255.255'
     var broadcastIPHex = ip2hex(broadcastIP)
     var icomHex = "49636f6d"
     var RS_M500Hex = "52532d4d353030"
+    var portAhex = ""
+    var portBhex = ""
+    var portChex = ""
+    var portDhex = ""
+    var portVoicehex = ""
 		var serverA = udp.createSocket('udp4');
 		var serverB = udp.createSocket('udp4');
 		var serverC = udp.createSocket('udp4');
@@ -79,14 +90,52 @@ module.exports = function (app) {
     var onlineTimestamp = Date.now()
     var online = false
 
-    globalOptions = options;
-    app.debug ('%j', globalOptions)
+    app.debug ('%j', options)
+
+
+    let localSubscription = {
+      context: '*', // Get data for all contexts
+      subscribe: [{
+        path: options.follow,
+        period: 1000
+      }]
+    };
+
+    app.subscriptionmanager.subscribe(
+      localSubscription,
+      unsubscribes,
+      subscriptionError => {
+        app.error('Error:' + subscriptionError);
+      },
+      delta => {
+        delta.updates.forEach(u => {
+          handleData(u.values)
+        });
+      }
+    );
+
+    function handleData (data) {
+      var channelObj = JSON.parse(data[0].value)
+      app.debug(channelObj)
+      app.debug(channelObj.channel)
+      let channel = channelObj.channel.toString()
+      if (channel != "") {
+        if (((Date.now() - startSilence) / 1000) > options.silence) {
+          if (channelString() != channel) {
+            app.debug('VHFinfo channel change: ' + channel + " n: " + stringToN(channel))
+            app.debug(activeChannelObj)
+            changeChannelTo(stringToN(channel))
+          }
+        }
+      }
+    }
+
 
     function ip2hex (ip) {
       app.debug(ip)
       var hex = []
       ip.split('.').forEach(n => {
-        hex.push(("00" + parseInt(n).toString(16)).substr(-2,2))
+        hex.push(("00" + parseInt(n).toString(16).toLowerCase()).substr(-2,2))
       })
       return hex[3]+hex[2]+hex[1]+hex[0]
     }
@@ -105,25 +154,26 @@ module.exports = function (app) {
 		  if (!findRadioTimer._destroyed) {
 		    clearInterval(findRadioTimer)
 		    radio.ip = info.address
+        radioIPhex = ip2hex(radio.ip)
 		    radio.port = info.port
+        radioPorthex = port2hex(radio.port)
 		    // app.debug('Received ServerA packet')
 		    // app.debug(msg.toString('hex') + " " + msg.toString('utf-8'))
-		    header = msg.slice(0,17).toString('hex')
-		    app.debug('Header: ' + header)
+		    header = msg.slice(0,17)
+		    debugPrint('Header ', header)
         radio.status = 'initializing'
         sendRadio(radio)
 		    sendSignIn(radio.ip, radio.port, listenPortB, listenPortC, listenPortD, listenPortVoice)
 		  } else {
-		    app.debug('ServerA: ' + msg.toString())
+		    debugPrint('ServerA', msg)
 		    // app.debug(msg.slice(0,48).toString('hex') + ' [' + msg.length + ']');
 		    // app.debug('Received %d bytes from %s:%d\n',msg.length, info.address, info.port);
-		    app.debug(msg.toString('hex'))
 		  }
 		})
 		
 		serverB.on('message',function(msg,info) {
       onlineTimestamp = Date.now()
-		  app.debug('ServerB (' + info.address + ':' + info.port + '): ' + msg.toString('hex') + " " + msg.toString('utf-8'))
+      debugPrint('ServerB', msg)
 		  if (!keepAliveTimer) {
 		    app.debug('Starting keepalive')
 		    keepAliveTimer = setInterval(() => keepAlive(info.address, info.port), 5000)
@@ -161,7 +211,7 @@ module.exports = function (app) {
             }
 		        break
 		    }
-		    app.debug('ServerC channel info (' + info.address + ':' + info.port + '): [' + msg.length + '] ' + msg.toString('hex'))
+		    debugPrint('Server', msg)
         activeChannelObj = JSON.parse(JSON.stringify(getChannel(hex)))
 		    app.debug("activeChannelObj:  " + JSON.stringify(activeChannelObj))
 		  } 
@@ -198,7 +248,7 @@ module.exports = function (app) {
 		
 		serverVoice.on('message',function(msg,info) {
 		  const hex = Array.from(msg)
-		  app.debug('serverVoice (' + info.address + ':' + info.port + '): ' + msg.toString('hex'))
+		  debugPrint('ServerVoice', msg)
 		  // msg.pipe(speaker)
 		})
 		
@@ -224,7 +274,18 @@ module.exports = function (app) {
 		    }
 		  }
 		}
-		
+	  
+    function stringToN (string) {
+      if (string.length == 4) {
+        let r = modeArray.indexOf(string.substr(-4,2))
+        let n = parseInt(string.substr(-2,2), 10)
+        return n*3 + r
+      } else if (string.length <= 2) {
+        let n = parseInt(string, 10)
+        return n*3
+      }
+    }
+
 		function getChannelInfoN (n) {
 		  let r = n % 3
 		  let nr = Math.floor(n / 3)
@@ -321,7 +382,7 @@ module.exports = function (app) {
 		  } else if (msgString.match(regex_fav)) {
 		      updateChannelFav(msg)
 		  } else {
-		    app.debug('ServerD:\n' + msg.toString('hex') + "\n" + msg.toString('utf-8'))
+        debugPrint('ServerD', msg)
 		  }
 		})
 		
@@ -451,6 +512,7 @@ module.exports = function (app) {
 		  const address = serverA.address()
 		  app.debug("Client using portA " + address.port)
 		  listenPortA = address.port
+      portAhex = port2hex(portAhex)
 		  findRadioTimer = setInterval(broadcastNew, 1000);
 		})
 		
@@ -510,15 +572,16 @@ module.exports = function (app) {
 		  channelTable.requested = true
 		}
 
+    function port2hex (port) {
+		  var porthex = port.toString(16).toLowerCase()
+		  return porthex[2]+porthex[3]+porthex[0]+porthex[1]
+    }
+
 		function sendSignIn (ip, port, portB, portC, portD, portVoice) {
-		  var portBhex = portB.toString(16)
-		  portBhex = portBhex[2]+portBhex[3]+portBhex[0]+portBhex[1]
-		  var portChex = portC.toString(16)
-		  portChex = portChex[2]+portChex[3]+portChex[0]+portChex[1]
-		  var portDhex = portD.toString(16)
-		  portDhex = portDhex[2]+portDhex[3]+portDhex[0]+portDhex[1]
-		  var portVoicehex = portVoice.toString(16)
-		  portVoicehex = portVoicehex[2]+portVoicehex[3]+portVoicehex[0]+portVoicehex[1]
+		  portBhex = port2hex(portB)
+		  portChex = port2hex(portC)
+		  portDhex = port2hex(portD)
+		  portVoicehex = port2hex(portVoice)
 		  var signIn = Buffer.from(icomHex + "01ff0000" + myIPHex + ip2hex(radio.ip) + "00020000380000000200" + portDhex + portVoicehex + portBhex + portChex + "2ab0" + RS_M500Hex + "00000042134195000000000000000000000000000000000000000000000000000000000000", "hex")
 		  serverA.send(signIn, 0, signIn.length, port, ip, function() {
 		    app.debug("Sending SignIn to use portB:" + portB + " portC:" + portC)
@@ -546,10 +609,17 @@ module.exports = function (app) {
 		          app.debug("changeChannelTo: activeChannelObj:  " + JSON.stringify(activeChannelObj))
               return true
             } else {
+		          app.debug("changeChannelTo: not enabled")
               return false
             }
+          } else {
+		        app.debug("changeChannelTo: enabled not defined")
           }
+        } else {
+		      app.debug("changeChannelTo: mode not defined")
         }
+      } else {
+		    app.debug("changeChannelTo: tableChannel[nr] not defined")
       }
 		}
 		
@@ -691,6 +761,14 @@ module.exports = function (app) {
       })
     }
 
+    function channelN() {
+      if (typeof activeChannelObj.nr != 'undefined') {
+        if (typeof activeChannelObj.mode != 'undefined') {
+          return (parseInt(activeChannelObj.nr, 10) * 3 + modeArray.indexOf(activeChannel.mode))
+        }
+      }
+    }
+
     function channelString() {
       if (typeof activeChannelObj.nr != 'undefined') {
         if (typeof activeChannelObj.mode != 'undefined') {
@@ -703,6 +781,14 @@ module.exports = function (app) {
       } else {
         return ""
       }
+    }
+
+    function debugPrint (name, msg) {
+      hexString = msg.toString('hex').toLowerCase()
+      hexString = hexString.replace(myIPHex, '- myIP -').replace(broadcastIPHex, '- BCST -').replace(icomHex, 'Icom').replace(RS_M500Hex, 'RS-M500')
+      hexString = hexString.replace(portBhex, '-pB-').replace(portChex, '-pC-').replace(portDhex, '-pD-').replace(portVoicehex, '-pV-')
+      hexString = hexString.replace(radioIPhex, '-radIP-').replace(radioPorthex, '-rP-')
+      app.debug(name + ': [' + msg.length + '] ' + hexString)
     }
 
     function sendChannel () {
