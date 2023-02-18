@@ -58,8 +58,7 @@ module.exports = function (app) {
     var broadcastIP = '255.255.255.255'
     var broadcastIPHex = ip2hex(broadcastIP)
     var icomHex = "49636f6d"
-    // var RS_M500Hex = "52532d4d353030"
-    var RS_M500Hex = "43542d4d353030" // CT_M500
+    var RS_M500Hex = "52532d4d353030"
     var CT_M500Hex = "43542d4d353030"
     var IC_M510Hex = "49432d4d353130"
     var portAhex = "unlikely"
@@ -92,9 +91,12 @@ module.exports = function (app) {
 		var propertiesHex
 		var activeChannelObj = {}
 		var header
+    var horn = false
     var startSilence
     var onlineTimestamp = Date.now()
     var online = false
+    let onStop = []
+
 
     app.debug ('options: %j', options)
 
@@ -119,6 +121,49 @@ module.exports = function (app) {
         });
       }
     );
+
+    let eventsString = 'nmea0183out'
+    let events = eventsString.split(',').map(s => s.trim())
+    app.debug(`using events %j`, events)
+    events.forEach(name => {
+      app.on(name, sendNMEA0183)
+    })
+    onStop.push(() => {
+      events.forEach(name => {
+        app.signalk.removeListener(name, send)
+      })
+    })
+
+    setTimeout(() => {
+      sendNMEA0183('$CDDSC,20,00244670524,00,03,26,,,,,R*07')
+      sendNMEA0183('$CDDSC,20,0244670524,00,03,26,,,,,R*07')
+      sendNMEA0183('$CDDSC,20,00244670524,00,00,26,900069900069,,,,R,*28')
+      sendNMEA0183('$CDDSC,20,0244670524,00,00,26,900069900069,,,,R,*28')
+    }, 10000)
+
+
+    function sendNMEA0183 (string) {
+      // string = '$CDDSC,20,00244670524,00,03,26,,,,,R*07'
+      radio.nmeaPort = radio.nmeaPort || 50004
+      let length = string.length + 2   // 0a
+      let header = [73,99,111,109,1,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,length,0,0,0,1,length,2]
+      let msg_header = Buffer.from(header)
+      let msg_nmea = Buffer.from(string, 'utf-8')
+      let msg_array = [msg_header, msg_nmea, Buffer.from('0d0a', 'hex')]
+      let msg = Buffer.concat(msg_array)
+		  serverD.send(msg, 0, msg.length, radio.nmeaPort, radio.ip, function() {
+        app.debug('sendNMEA0183: ' + ' ' + msg.toString('hex'))
+        app.debug('sendNMEA0183: ' + ' ' + msg.toString('utf-8'))
+		  })
+    }
+
+    /*
+    setInterval(() => {
+      radio.nmeaPort = radio.nmeaPort +1
+      app.debug('radio.nmeaPort: ' + radio.nmeaPort)
+    }, 10000)
+    */
+   
 
     function handleData (data) {
       var channelObj = JSON.parse(data[0].value)
@@ -198,6 +243,16 @@ module.exports = function (app) {
 		    app.debug('ServerC ACK (' + info.address + ':' + info.port + '): [' + msg.length + '] ' + msg.toString('hex'))
 		  } else if (msgString.match(regex_update)) {
 		    readChannelUpdate(msg)
+		  } else if (msg.length == 32) {
+        if (hex[26] == 80) {
+          app.debug('HORN is on')
+          horn = true
+        } else if (hex[26] == 64) {
+          app.debug('HORN is off')
+          horn = false
+        }
+		  } else if (msg.length < 35) {
+        debugPrint("serverC <35", msg)
 		  } else {
 		    let s = parseInt(hex[35].toString(16),16)
 		    switch (s) {
@@ -389,10 +444,22 @@ module.exports = function (app) {
 		      propertiesMsg(msg)
 		  } else if (msgString.match(regex_fav)) {
 		      updateChannelFav(msg)
+		  } else if (msgString.startsWith('49636f6d01000000000000000000000000010000')) {
+		    // app.debug('ServerD (' + info.address + ':' + info.port + '): ' + msgString)
+        receiveNMEA0183(msg)
 		  } else {
         debugPrint('ServerD', msg)
 		  }
 		})
+
+    function receiveNMEA0183 (msg) {
+      app.debug('receiveNMEA0183: [' + msg.length + '] ' + msg.toString('hex'))
+      let h = Array.from(msg.slice(0,27))
+      // app.debug('NMEA0183: ' + h)
+      let length = h[20]
+      msg = msg.slice(27)
+      // app.debug('receiveNMEA0183: [' + length + '] ' + msg.toString('utf-8'))
+    }
 		
 		function propertiesMsg (msg) {
 		  var hex = Array.from(msg)
@@ -595,7 +662,7 @@ module.exports = function (app) {
 		  portDhex = port2hex(portD)
 		  portEhex = port2hex(portE)
 		  portVoicehex = port2hex(portVoice)
-		  var signIn = Buffer.from(icomHex + "01ff0000" + myIPHex + ip2hex(radio.ip) + "00020000380000000200" + portDhex + portVoicehex + portBhex + portChex + portEhex + RS_M500Hex + "00000042134195000000000000000000000000000000000000000000000000000000000000", "hex")
+		  var signIn = Buffer.from(icomHex + "01ff0000" + myIPHex + ip2hex(radio.ip) + "00020000380000000100" + portDhex + portVoicehex + portBhex + portChex + portEhex + CT_M500Hex + "00000042134195000000000000000000000000000000000000000000000000000000000000", "hex")
 		  serverA.send(signIn, 0, signIn.length, port, ip, function() {
 		    debugPrint("Sending SignIn", signIn)
 		  })
