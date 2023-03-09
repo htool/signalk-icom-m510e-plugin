@@ -24,16 +24,21 @@ module.exports = function (app) {
   var schema = {
     // The plugin schema
     properties: {
-      follow: {
+      autoFollowPath: {
+        type: 'string',
+        title: 'Path to check for auto-follow mode',
+        default: 'communication.vhf.autofollow'
+      },
+      followPath: {
         title: 'Follow the channel published on this path',
-        default: 'resources.vhf.nearest.0',
+        default: 'resources.vhfdata.nearest.0',
         type: 'string'
       },
       silence: {
         title: 'Silence time in seconds before changing channel',
         default: 30,
         type: 'number'
-      },
+      }
     }
   }
 
@@ -96,17 +101,22 @@ module.exports = function (app) {
     var onlineTimestamp = Date.now()
     var online = false
     let onStop = []
-
+    var autoFollow = false
 
     app.debug ('options: %j', options)
 
 
     let localSubscription = {
       context: '*', // Get data for all contexts
-      subscribe: [{
-        path: options.follow,
-        period: 1000
-      }]
+      subscribe: [
+        {
+          path: options.followPath,
+          period: 1000
+        },
+        {
+          path: options.autoFollowPath
+        }
+      ]
     };
 
     app.subscriptionmanager.subscribe(
@@ -122,58 +132,28 @@ module.exports = function (app) {
       }
     );
 
-    let eventsString = 'nmea0183out'
-    let events = eventsString.split(',').map(s => s.trim())
-    app.debug(`using events %j`, events)
-    events.forEach(name => {
-      app.on(name, sendNMEA0183)
-    })
-    onStop.push(() => {
-      events.forEach(name => {
-        app.signalk.removeListener(name, send)
-      })
-    })
-
-    setTimeout(() => {
-      sendNMEA0183('$CDDSC,20,00244670524,00,03,26,,,,,R*07')
-      sendNMEA0183('$CDDSC,20,0244670524,00,03,26,,,,,R*07')
-      sendNMEA0183('$CDDSC,20,00244670524,00,00,26,900069900069,,,,R,*28')
-      sendNMEA0183('$CDDSC,20,0244670524,00,00,26,900069900069,,,,R,*28')
-    }, 10000)
-
-
-    function sendNMEA0183 (string) {
-      // string = '$CDDSC,20,00244670524,00,03,26,,,,,R*07'
-      radio.nmeaPort = radio.nmeaPort || 50004
-      let length = string.length + 2   // 0a
-      let header = [73,99,111,109,1,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,length,0,0,0,1,length,2]
-      let msg_header = Buffer.from(header)
-      let msg_nmea = Buffer.from(string, 'utf-8')
-      let msg_array = [msg_header, msg_nmea, Buffer.from('0d0a', 'hex')]
-      let msg = Buffer.concat(msg_array)
-		  serverD.send(msg, 0, msg.length, radio.nmeaPort, radio.ip, function() {
-        app.debug('sendNMEA0183: ' + ' ' + msg.toString('hex'))
-        app.debug('sendNMEA0183: ' + ' ' + msg.toString('utf-8'))
-		  })
-    }
-
-    /*
-    setInterval(() => {
-      radio.nmeaPort = radio.nmeaPort +1
-      app.debug('radio.nmeaPort: ' + radio.nmeaPort)
-    }, 10000)
-    */
-   
-
     function handleData (data) {
-      var channelObj = JSON.parse(data[0].value)
-      app.debug(channelObj.channel)
-      let channel = channelObj.channel.toString()
-      if (channel != "") {
-        if (((Date.now() - startSilence) / 1000) > options.silence) {
-          if (channelString() != channel) {
-            app.debug('VHFinfo channel change: ' + channel + " n: " + stringToN(channel))
-            changeChannelTo(stringToN(channel))
+      path = data[0].path
+      // app.debug(`handleData: ${path}`)
+      if (path == options.autoFollowPath) {
+        var af = String(data[0].value).toLowerCase()
+        if (af == '1' || af == 'true' || af == 'on') {
+          autoFollow = true
+        } else {
+          autoFollow = false
+        }
+        app.debug(`autoFollow set to: ${autoFollow}`)
+      } else if (path == options.followPath && autoFollow == true) {
+        var channelObj = JSON.parse(data[0].value)
+        app.debug('channelObj: %j', channelObj)
+        // app.debug(channelObj.channel)
+        let channel = channelObj.channel.toString()
+        if (channel != "") {
+          if (((Date.now() - startSilence) / 1000) > options.silence) {
+            if (channelString() != channel) {
+              app.debug('VHFinfo channel change: ' + channel + " n: " + stringToN(channel))
+              changeChannelTo(stringToN(channel))
+            }
           }
         }
       }
@@ -210,7 +190,7 @@ module.exports = function (app) {
 		    // app.debug(msg.toString('hex') + " " + msg.toString('utf-8'))
 		    header = msg.slice(0,17)
 		    debugPrint('Header ', header)
-        radio.status = 'initializing'
+        radio.status = 'Initializing RS-M500'
         sendRadio(radio)
 		    sendSignIn(radio.ip, radio.port, listenPortB, listenPortC, listenPortD, listenPortE, listenPortVoice)
 		  } else {
@@ -222,7 +202,9 @@ module.exports = function (app) {
 		
 		serverB.on('message',function(msg,info) {
       onlineTimestamp = Date.now()
-      debugPrint('ServerB', msg)
+      if (!msg.toString('hex').startsWith('80c9000')) {
+        debugPrint('ServerB', msg)
+      }
 		  if (!keepAliveTimer) {
 		    app.debug('Starting keepalive')
 		    keepAliveTimer = setInterval(() => keepAlive(info.address, info.port), 5000)
@@ -231,7 +213,8 @@ module.exports = function (app) {
 		  if (channelTable.requested == false) {
 		    requestChannels(radio.ip, radio.port, 1)
 		    setTimeout(() => askChannel(), 4000)
-		    setTimeout(() => requestChannels(radio.ip, radio.port, 2), 5000)
+		    // setInterval(() => askChannel(), 4000)
+		    // setInterval(() => requestChannels(radio.ip, radio.port, 1), 5000)
 		  }
 		})
 
@@ -317,18 +300,16 @@ module.exports = function (app) {
 		function updateChannelFav (hex) {
 		  let f = parseInt(hex[32].toString(16),16)
 		  let h = hex2bin(hex[32])
-      app.debug('updateChannelFav: hex: ' + hex.join(' '))
-      app.debug('updateChannelFav: f: ' + f + "  h: " + h)
 		  let channel = getChannelInfoHex(hex[29], hex[28])
 		  var fav
-		  switch (h[5]) {
-		    case 1:
-		      fav = true
-		      break
-		    case 0:
-		      fav = false
-		      break
-		  }
+      var a = parseInt(h[3],10)
+      var b = parseInt(h[5],10)
+      if (a ? !b : b) {   // xor
+        fav = false
+      } else {
+        fav = true
+      }
+      app.debug('updateChannelFav: f: ' + f + "  h: " + h + ' h[5]: ' + h[5] + ' fav: ' + fav)
 		  if (typeof channelTable[channel.nr] != 'undefined') {
 		    if (typeof channelTable[channel.nr][channel.mode] != 'undefined') {
 		      channelTable[channel.nr][channel.mode].fav = fav
@@ -369,7 +350,7 @@ module.exports = function (app) {
 		}
 		
 		function getChannel (hex) {
-		  app.debug('getChannel: ' + hex.join(' '))
+		  // app.debug('getChannel: ' + hex.join(' '))
 		  let channel = getChannelInfoHex(hex[27], hex[26])
 		  radio.squelch = hex[34]
 		  // app.debug('getChannel channel: ' + JSON.stringify(channel))
@@ -404,7 +385,6 @@ module.exports = function (app) {
 		      channel.properties = channelTable[channel.nr][channel.mode].properties
 		    }
 		  }
-      startSilence = Date.now()
 		  return channel
 		}
 		
@@ -424,9 +404,11 @@ module.exports = function (app) {
 		      chunk = chunk.slice(11)
 		    }
 		    if (startValue == 520) {
-		      radio.status = 'online'
+          radio.status = 'Initializing RS-M500'
           startSilence = Date.now()
-		      sendSilenceTimer = setInterval(() => sendSilence(), 1000)
+          setTimeout(() => {
+		        sendSilenceTimer = setInterval(() => sendSilence(), 1000)
+          }, 8000)
 		      //sendChannelTable()
 		    }
 		  } else if (msgString.startsWith('8000')) {
@@ -444,23 +426,14 @@ module.exports = function (app) {
 		      propertiesMsg(msg)
 		  } else if (msgString.match(regex_fav)) {
 		      updateChannelFav(msg)
+          sendChannel()
 		  } else if (msgString.startsWith('49636f6d01000000000000000000000000010000')) {
 		    // app.debug('ServerD (' + info.address + ':' + info.port + '): ' + msgString)
-        receiveNMEA0183(msg)
 		  } else {
         debugPrint('ServerD', msg)
 		  }
 		})
 
-    function receiveNMEA0183 (msg) {
-      app.debug('receiveNMEA0183: [' + msg.length + '] ' + msg.toString('hex'))
-      let h = Array.from(msg.slice(0,27))
-      // app.debug('NMEA0183: ' + h)
-      let length = h[20]
-      msg = msg.slice(27)
-      // app.debug('receiveNMEA0183: [' + length + '] ' + msg.toString('utf-8'))
-    }
-		
 		function propertiesMsg (msg) {
 		  var hex = Array.from(msg)
 		  msg = msg.slice(32)
@@ -469,12 +442,11 @@ module.exports = function (app) {
 		  if (hex[28] == 0) {
 		    app.debug('propertiesMsg: First message')
 		    propertiesHex = Array.from(msg)
-		    app.debug('propertiesMsg: ' + msg.toString('hex'))
+		    // app.debug('propertiesMsg: ' + msg.toString('hex'))
 		  } else if (hex[28] == 200) {
 		    app.debug('propertiesMsg: Second message')
 		    propertiesHex = propertiesHex.concat(Array.from(msg))
-		    app.debug('propertiesMsg: ' + msg.toString('hex'))
-		    app.debug('propertiesMsg: ' + JSON.stringify(propertiesHex))
+		    // app.debug('propertiesMsg: ' + msg.toString('hex'))
 		    var nr = 0
 		    var modePos = 0
 		    while (propertiesHex.length > 1) {
@@ -506,7 +478,7 @@ module.exports = function (app) {
 		
 		  // Favourite set
       let offset=15
-		  if (properties[offset+5] == 0) {
+		  if (properties[offset+4] == properties[offset+6]) {
 		    channelTable[nr][mode]['fav'] = true
 		  } else {
 		    channelTable[nr][mode]['fav'] = false
@@ -533,8 +505,9 @@ module.exports = function (app) {
 		  } else {
 		    channelTable[nr][mode]['duplex'] = false
 		  } 
-
-		  // app.debug("nr: " + nr + " mode: " + mode + " properies: " + properties)
+      if (channelTable[nr][mode].enabled) {
+		    // app.debug("nr: " + nr + " mode: " + mode + " properies: " + properties+ ' ' + properties[offset+4] + properties[offset+6] + ' fav: ' + channelTable[nr][mode].fav)
+      }
 		}
 		
 		
@@ -637,11 +610,13 @@ module.exports = function (app) {
 		}
 		
 		function requestChannels (ip, port, nr) {
-		  var msg1 = Buffer.from(icomHex + "01020000" + myIPHex + ip2hex(radio.ip) + "000400000400000000000000", "hex")
-		  var msg2 = Buffer.from(icomHex + "01020000" + myIPHex + ip2hex(radio.ip) + "00040000020000000100", "hex")
-		 
+		  // var msg1 = Buffer.from(icomHex + "01020000" + myIPHex + ip2hex(radio.ip) + "000400000400000000000000", "hex")
+		  // var msg2 = Buffer.from(icomHex + "01020000" + myIPHex + ip2hex(radio.ip) + "00040000020000000100", "hex")
+		  var msg1 = Buffer.from(icomHex + "01000000" + myIPHex + ip2hex(radio.ip) + "000400000400000000000000", "hex")
+		  var msg2 = Buffer.from(icomHex + "01000000" + myIPHex + ip2hex(radio.ip) + "00040000020000000100", "hex")
 		  if (nr == 1) {
 		    msg = msg1
+		    setTimeout(() => requestChannels(radio.ip, radio.port, 2), 2000)
 		  } else if (nr == 2) {
 		    msg = msg2
 		  }
@@ -650,19 +625,21 @@ module.exports = function (app) {
 		  })
 		  channelTable.requested = true
 		}
-
+		
     function port2hex (port) {
 		  var porthex = port.toString(16).toLowerCase()
 		  return porthex[2]+porthex[3]+porthex[0]+porthex[1]
     }
 
-		function sendSignIn (ip, port, portB, portC, portD, portVoice, portE) {
+		function sendSignIn (ip, port, portB, portC, portD, portE, portVoice) {
 		  portBhex = port2hex(portB)
 		  portChex = port2hex(portC)
 		  portDhex = port2hex(portD)
 		  portEhex = port2hex(portE)
 		  portVoicehex = port2hex(portVoice)
-		  var signIn = Buffer.from(icomHex + "01ff0000" + myIPHex + ip2hex(radio.ip) + "00020000380000000100" + portDhex + portVoicehex + portBhex + portChex + portEhex + CT_M500Hex + "00000042134195000000000000000000000000000000000000000000000000000000000000", "hex")
+      var signIn
+      signIn = Buffer.from(icomHex + "01ff0000" + myIPHex + ip2hex(radio.ip) + "00020000380000000200" + portDhex + portVoicehex + portBhex + portChex + portEhex + RS_M500Hex + "00000042134195000000000000000000000000000000000000000000000000000000000000", "hex")
+      status = 'Initializing RS-M500'
 		  serverA.send(signIn, 0, signIn.length, port, ip, function() {
 		    debugPrint("Sending SignIn", signIn)
 		  })
@@ -750,11 +727,8 @@ module.exports = function (app) {
 		}
 		
 		function askChannel () {
-		  var msg = Buffer.from(icomHex + "01020000" + myIPHex + ip2hex(radio.ip) + "0103000000000000", "hex")
-		  serverC.send(msg, 0, msg.length, 50003, radio.ip, function () {
-		    app.debug("Sending askChannel")
-		  })
-		  var msg = Buffer.from(icomHex + "01020000" + myIPHex + ip2hex(radio.ip) + "0102000000000000", "hex")
+      // var msg = Buffer.from(icomHex + "01020000" + myIPHex + ip2hex(radio.ip) + "0103000000000000", "hex")
+      var msg = Buffer.from(icomHex + "01000000" + myIPHex + ip2hex(radio.ip) + "0103000000000000", "hex")
 		  serverC.send(msg, 0, msg.length, 50003, radio.ip, function () {
 		    app.debug("Sending askChannel")
 		  })
@@ -804,14 +778,17 @@ module.exports = function (app) {
     function sendSilence() {
       var silence = Math.floor(((Date.now() - startSilence)/1000))
       if (Date.now() - onlineTimestamp < 10000) {
-        app.debug('sendSilence: alive sign')
-        if (radio.status == 'initializing') {
-          startSilence = Date.now()
+        // app.debug('sendSilence: alive sign')
+        // if (radio.status == 'Initializing CT-M500') {
+        if (radio.status == 'Initializing RS-M500') {
+          radio.status = 'online'
           silence = 0
+          app.debug(activeChannelObj)
+          activeChannelObj.name = channelTable[activeChannelObj.nr][activeChannelObj.mode].name
+          sendChannel()
         }
-        radio.status = 'online'
       } else {
-        app.debug('sendSilence: no alive sign')
+        // app.debug('sendSilence: no alive sign')
         if (radio.status == 'online') {
           silence = -1
           radio.status = 'offline'
@@ -821,7 +798,7 @@ module.exports = function (app) {
           clearInterval(sendSilenceTimer)
         }
       }
-      app.debug('sendSilence: ' + silence + ' radio.status: ' + radio.status)
+      // app.debug('sendSilence: ' + silence + ' radio.status: ' + radio.status)
       var values = []
       var path = 'communication.vhf'
       if (radio.status == "online") {
@@ -985,10 +962,6 @@ module.exports = function (app) {
       callback({state: 'COMPLETED', statusCode: statusCode})
     }
 
-		//setTimeout(() => app.debug(channelTable), 10000)
-		// setInterval(() => broadcastCT(), 5000)
-		// setInterval(() => sendSignInCT('192.168.1.145', 60000, 60001, 60002, 60003, 60004), 5500)
-		
 	};
 
   plugin.stop = function () {
