@@ -19,7 +19,7 @@ module.exports = function (app) {
 
   plugin.id = 'signalk-icom-m510e-plugin'
   plugin.name = 'ICOM M510E plugin'
-  plugin.description = 'Get active channel information and change channel over wlan.'
+  plugin.description = 'Send and receive NMEA0183 data to and from Icom M510E. Including AIS data to enable AIS functionalily on a non-AIS model.'
 
   var schema = {
     // The plugin schema
