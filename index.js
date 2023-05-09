@@ -19,7 +19,7 @@ module.exports = function (app) {
 
   plugin.id = 'signalk-icom-m510e-plugin'
   plugin.name = 'ICOM M510E plugin'
-  plugin.description = 'Send and receive NMEA0183 data to and from Icom M510E. Including AIS data to enable AIS functionalily on a non-AIS model.'
+  plugin.description = 'Get active channel information and change channel over wlan.'
 
   var schema = {
     // The plugin schema
@@ -38,6 +38,10 @@ module.exports = function (app) {
         title: 'Silence time in seconds before changing channel',
         default: 30,
         type: 'number'
+      },
+      IP: {
+        title: "Specify Icom M510e ip address in case it's not auto-detected",
+        type: 'string'
       }
     }
   }
@@ -59,7 +63,7 @@ module.exports = function (app) {
     var myIPHex = ip2hex(myIP)
     var radioIPhex = "unlikely"
     var radioPorthex = "unlikely"
-    var broadcastIP = '255.255.255.255'
+    var broadcastIP = options.IP || '255.255.255.255'
     var broadcastIPHex = ip2hex(broadcastIP)
     var icomHex = "49636f6d"
     var RS_M500Hex = "52532d4d353030"
@@ -631,6 +635,7 @@ module.exports = function (app) {
     }
 
 		function sendSignIn (ip, port, portB, portC, portD, portE, portVoice) {
+		  clearInterval(findRadioTimer)
 		  portBhex = port2hex(portB)
 		  portChex = port2hex(portC)
 		  portDhex = port2hex(portD)
