@@ -53,9 +53,8 @@ module.exports = function (app) {
 
   plugin.start = function (options, restartPlugin) {
     // Here we put our plugin logic
-    app.debug('Plugin started');
-    var unsubscribes = [];
-		var udp = require('dgram');
+    app.debug('Plugin started')
+		var udp = require('dgram')
     var myIP = ip.address()
     var myIPHex = ip2hex(myIP)
     var radioIPhex = "unlikely"
@@ -966,19 +965,16 @@ module.exports = function (app) {
 
   plugin.stop = function () {
     // Here we put logic we need when the plugin stops
-    app.debug('Plugin stopped');
-    plugin.stop = function () {
-      unsubscribes.forEach(f => f());
-      unsubscribes = [];
-      timers.forEach(timer => {
-        clearInterval(timer)
-      }) 
-    };
+    app.debug('Plugin stopped')
+    unsubscribes.forEach(f => f())
+    unsubscribes = []
+    timers.forEach(timer => {
+      clearInterval(timer)
+    }) 
+  }
 
-  };
-
-  return plugin;
-};
+  return plugin
+}
 
 function intToHex(integer) {
 	var hex = padd((integer & 0xff).toString(16), 2)

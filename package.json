@@ -1,6 +1,6 @@
 {
   "name": "signalk-icom-m510e-plugin",
-  "version": "0.0.10",
+  "version": "0.0.11",
   "description": "Send and receive NMEA0183 data to and from Icom M510E. Including AIS data to enable AIS functionalily on a non-AIS model.",
   "main": "index.js",
   "scripts": {
