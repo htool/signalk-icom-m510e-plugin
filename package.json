@@ -4,7 +4,7 @@
   "description": "Send and receive NMEA0183 data to and from Icom M510E. Including AIS data to enable AIS functionalily on a non-AIS model.",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "node --test"
   },
   "repository": {
     "type": "git",
