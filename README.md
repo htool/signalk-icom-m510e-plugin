@@ -6,14 +6,18 @@ Radio info is written to:
 ```
 communication.vhf.ip        string      IP address of Icom M510E
                  .port      number      UDP source port
+                 .status    string      offline, Initializing RS-M500, or online
                  .busy      boolean     Is channel busy?
+                 .silence   number      Seconds since the channel went quiet
                  .squelch   number      Squelch setting (0-10)
                  .channel   string      Active channel
+                 .name      string      Channel name from the radio
                  .fav       boolean     Is favourite?
                  .duplex    boolean     Is channel duplex?
                  .hilo      boolean     Allows changing High/Low?
                  .watt      number      1 or 25 Watt
                  .enabled   boolean     Is channel enabled
+                 .horn      boolean     Fog horn sounding
 ```
 
 ## Api
@@ -24,6 +28,10 @@ The following api calls can be made
 curl -H "Content-Type: application/json" -X PUT http://localhost:3000/signalk/v1/api/vessels/self/communication/vhf/channel -d '{"value": "+1"}'
 ```
 where `value` is `-1` for channel down, `+1` for channel up or a channel number in 4 characters, e.g. `2019` or `0001`.
+
+## NMEA 0183
+
+After sign-in the radio sends NMEA 0183 datagrams. GPS sentences are in the usual set (`GNRMC`, `GNGSA`, `GPGSV`, `GLGSV`); AIS sentences are forwarded the same way when the set emits them. Each sentence is emitted on the server `nmea0183` event and parsed into a Signal K delta.
 
 ## NMEA2000 / CT-M500
 

@@ -22,10 +22,6 @@
     "signalk-category-hardware"
   ],
   "dependencies": {
-    "@penggy/easy-rtp-parser": "^1.0.2",
-    "ip": "^1.1.8",
-    "is-rtp": "^2.0.0",
-    "lodash": "^4.17.21",
-    "request": "^2.88.2"
+    "@signalk/nmea0183-signalk": "^3.20.1"
   }
 }
