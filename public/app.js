@@ -18,6 +18,7 @@ const state = {
   ip: '',
   locked: false,
   audio: '',
+  atis: '',
   channelGroup: '',
 }
 
@@ -38,6 +39,8 @@ function render () {
   const number = state.nr == null || state.nr === '' ? state.channel : String(state.nr)
   if (number) $('channel').textContent = number
   $('name').textContent = state.name || ''
+  $('atis').textContent = state.atis ? `ATIS ${state.atis}` : ''
+  $('atis').hidden = !state.atis
   $('power').textContent = state.watt == null ? '1W' : `${state.watt}W`
   $('bank').textContent = bankLabel()
   $('fav').textContent = state.fav ? '★' : '☆'
@@ -112,6 +115,7 @@ function applyValue (path, value) {
   else if (key === 'intercom') state.intercom = value === true
   else if (key === 'ip') state.ip = value || ''
   else if (key === 'audio') state.audio = value || ''
+  else if (key === 'atis') state.atis = value || ''
   else if (key === 'channelGroup') state.channelGroup = value || ''
 }
 

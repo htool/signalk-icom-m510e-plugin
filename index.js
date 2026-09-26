@@ -6,6 +6,7 @@ const NmeaParser = require('@signalk/nmea0183-signalk')
 const { RadioSession } = require('./radio')
 const { channelsFromFollowValue, parseChannelCommand, rtpPayload, mulawToPcm, pcmToMulaw } = require('./protocol')
 const { createAudioBuffer, RATE: AUDIO_RATE } = require('./audio-buffer')
+const { createAtisDecoder } = require('./atis')
 
 module.exports = function (app) {
   const plugin = {}
@@ -20,7 +21,17 @@ module.exports = function (app) {
   const audioClients = new Map()
   let audioPlayer = null
   let audioListener = ''
+  let atisCode = ''
+  let atisBusy = false
+  let atisDumpAt = 0
   const audioBuffer = createAudioBuffer()
+  const atis = createAtisDecoder((code) => {
+    atisCode = code
+    app.debug(`ATIS ${code}`)
+    app.handleMessage(plugin.id, {
+      updates: [{ values: [{ path: 'communication.vhf.atis', value: code }] }],
+    })
+  })
 
   plugin.id = 'signalk-icom-m510e-plugin'
   plugin.name = 'ICOM M510E plugin'
@@ -220,6 +231,7 @@ module.exports = function (app) {
     if (!payload) return
     const pcm = mulawToPcm(payload)
     audioBuffer.append(pcm)
+    atis.push(pcm)
   }
 
   function shutdown () {
@@ -306,6 +318,45 @@ module.exports = function (app) {
     session.setChannel(wanted.index, { force: true })
   }
 
+  function considerAtisDump (state) {
+    const busy = state.radio && state.radio.busy === true
+    const ended = atisBusy && !busy
+    atisBusy = busy
+    const now = Date.now()
+    if (ended) dumpAtisWav('atis-tail.wav', 20)
+    if (now - atisDumpAt < 20000) return
+    if (audioBuffer.end() - audioBuffer.start() < AUDIO_RATE) return
+    atisDumpAt = now
+    dumpAtisWav('atis-buffer.wav')
+  }
+
+  function dumpAtisWav (name, seconds) {
+    if (typeof app.getDataDirPath !== 'function') return
+    const end = audioBuffer.end()
+    const from = seconds ? Math.max(audioBuffer.start(), end - seconds * AUDIO_RATE) : audioBuffer.start()
+    const pcm = audioBuffer.read(from, end - from).pcm
+    if (pcm.length < AUDIO_RATE) return
+    const header = Buffer.alloc(44)
+    header.write('RIFF', 0)
+    header.writeUInt32LE(36 + pcm.length, 4)
+    header.write('WAVE', 8)
+    header.write('fmt ', 12)
+    header.writeUInt32LE(16, 16)
+    header.writeUInt16LE(1, 20)
+    header.writeUInt16LE(1, 22)
+    header.writeUInt32LE(AUDIO_RATE, 24)
+    header.writeUInt32LE(AUDIO_RATE * 2, 28)
+    header.writeUInt16LE(2, 32)
+    header.writeUInt16LE(16, 34)
+    header.write('data', 36)
+    header.writeUInt32LE(pcm.length, 40)
+    const file = path.join(app.getDataDirPath(), name)
+    fs.writeFile(file, Buffer.concat([header, pcm]), (err) => {
+      if (err) app.debug(`ATIS wav failed: ${err.message}`)
+      else app.debug(`ATIS wav ${file} ${(pcm.length / 2 / AUDIO_RATE).toFixed(1)}s`)
+    })
+  }
+
   function handleNmea (sentence) {
     app.emit('nmea0183', sentence)
     try {
@@ -342,6 +393,8 @@ module.exports = function (app) {
     values.push({ path: base + '.marked', value: marked.slice() })
     values.push({ path: base + '.scanMode', value: state.scanMode || '' })
     values.push({ path: base + '.autofollow', value: autoFollow === true })
+    if (atisCode) values.push({ path: base + '.atis', value: atisCode })
+    considerAtisDump(state)
     app.handleMessage(plugin.id, { updates: [{ values }] })
     maybeFollow(state)
   }
