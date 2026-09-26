@@ -18,6 +18,7 @@ test('plugin metadata matches the Signal K entry points', () => {
   assert.equal(schema.properties.scanResume.default, 30)
   assert.equal(schema.properties.followPath.default, 'resources.vhfdata.nearest.0')
   assert.equal(schema.properties.autoFollowPath.default, 'communication.vhf.autofollow')
+  assert.equal(schema.properties.IP.type, 'string')
 })
 
 test('channel fields are one document', () => {

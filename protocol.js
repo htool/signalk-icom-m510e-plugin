@@ -101,12 +101,12 @@ function decodeFrame (buffer) {
   }
 }
 
-function encodeDiscover (srcIp, replyPort) {
+function encodeDiscover (srcIp, replyPort, dstIp = '255.255.255.255') {
   const body = Buffer.alloc(4)
   body.writeUInt16LE(replyPort, 0)
   return encodeFrame({
     srcIp,
-    dstIp: '255.255.255.255',
+    dstIp,
     marker: Marker.DISCOVER,
     command: Command.DISCOVER,
     body,

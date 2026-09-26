@@ -29,6 +29,7 @@ class RadioSession {
     this.heardTimeoutMs = options.heardTimeoutMs || 10000
     this.scanIntervalMs = options.scanIntervalMs || 200
     this.scanResumeSeconds = Number.isFinite(options.scanResumeSeconds) ? options.scanResumeSeconds : 30
+    this.discoverAddress = options.discoverAddress || '255.255.255.255'
     this.tablePart2Ms = options.tablePart2Ms == null ? 2000 : options.tablePart2Ms
     this.askChannelMs = options.askChannelMs == null ? 4000 : options.askChannelMs
     this.sockets = {}
@@ -140,8 +141,8 @@ class RadioSession {
 
   broadcast () {
     if (this.closed || !this.ports.discovery) return
-    const frame = protocol.encodeDiscover(this.localIp, this.ports.discovery)
-    this.send(this.sockets.discovery, frame, protocol.PORT.DISCOVER, '255.255.255.255')
+    const frame = protocol.encodeDiscover(this.localIp, this.ports.discovery, this.discoverAddress)
+    this.send(this.sockets.discovery, frame, protocol.PORT.DISCOVER, this.discoverAddress)
   }
 
   sendKeepAlive () {
