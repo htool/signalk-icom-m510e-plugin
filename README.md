@@ -20,6 +20,10 @@ communication.vhf.ip        string      IP address of Icom M510E
                  .horn      boolean     Fog horn sounding
 ```
 
+## Webapp
+
+With the plugin installed, Signal K serves the RS-M500 style remote at `/signalk-icom-m510e-plugin/`. It shows the channel, name, power and favourite flag, and can change channel, squelch, HI/LO, scan, dualwatch, push-to-talk and intercom. There is no DSC.
+
 ## Api
 
 The following api calls can be made
@@ -28,6 +32,8 @@ The following api calls can be made
 curl -H "Content-Type: application/json" -X PUT http://localhost:3000/signalk/v1/api/vessels/self/communication/vhf/channel -d '{"value": "+1"}'
 ```
 where `value` is `-1` for channel down, `+1` for channel up or a channel number in 4 characters, e.g. `2019` or `0001`.
+
+Auto-follow reads the nearest station from the path set in the plugin config (`resources.vhfdata.nearest.0` by default). That value is the VHFinfo JSON object. Its `channel` field is used, and a list such as `12/16` tunes the first channel.
 
 ## NMEA 0183
 

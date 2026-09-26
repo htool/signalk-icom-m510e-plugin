@@ -16,10 +16,15 @@
     "url": "https://github.com/htool/signalk-icom-m510e-plugin/issues"
   },
   "homepage": "https://github.com/htool/signalk-icom-m510e-plugin#readme",
+  "signalk": {
+    "appIcon": "plugin-icon.png",
+    "displayName": "ICOM M510"
+  },
   "keywords": [
     "signalk-node-server-plugin",
     "signalk-category-instruments",
-    "signalk-category-hardware"
+    "signalk-category-hardware",
+    "signalk-webapp"
   ],
   "dependencies": {
     "@signalk/nmea0183-signalk": "^3.20.1"

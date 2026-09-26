@@ -15,10 +15,15 @@ function fakeUdp () {
           handlers[event] = fn
           return socket
         },
-        bind (callback) {
-          socket.port = nextPort
-          nextPort += 1
-          callback()
+        once (event, fn) {
+          handlers[event] = fn
+          return socket
+        },
+        bind (port, callback) {
+          const done = typeof port === 'function' ? port : callback
+          socket.port = typeof port === 'number' && port ? port : nextPort
+          if (!(typeof port === 'number' && port)) nextPort += 1
+          done()
         },
         address () {
           return { port: socket.port, address: '0.0.0.0' }
@@ -34,6 +39,7 @@ function fakeUdp () {
         },
         close () {
           socket.closed = true
+          if (handlers.close) handlers.close()
         },
       }
       return socket
@@ -185,8 +191,8 @@ test('scan steps to the next enabled channel and stops', async () => {
     body: Buffer.from([0x03, 0xff, 0x00, 0x00]),
   })
   radio.inject('discovery', reply, { address: '192.168.1.146', port: 50000 })
-  const disabled = Buffer.from([0, 80, 0])
-  const enabled = Buffer.from([0, 0, 0])
+  const disabled = Buffer.from([0x80])
+  const enabled = Buffer.from([0x00])
   const payload = Buffer.concat([
     disabled, disabled, disabled,
     enabled,
@@ -205,6 +211,27 @@ test('scan steps to the next enabled channel and stops', async () => {
   assert.equal(radio.getState().channel.label, '1')
   assert.equal(radio.step(1, false), true)
   assert.equal(radio.getState().channel.label, '2')
+  radio.ensure(1, '00').enabled = false
+  radio.ensure(2, '00').enabled = false
+  radio.ensure(3, '00').enabled = false
+  radio.channel = { nr: 88, mode: '00', label: '88' }
+  assert.equal(radio.step(1, false), true)
+  assert.equal(radio.getState().channel.nr, 4)
+  radio.channel = { nr: 1, mode: '00', label: '1' }
+  assert.equal(radio.step(-1, false), true)
+  assert.equal(radio.getState().channel.nr, 88)
+  radio.ensure(16, '00').fav = true
+  radio.channel = { nr: 1, mode: '00', label: '1' }
+  assert.equal(radio.step(1, true), true)
+  assert.equal(radio.getState().channel.nr, 16)
+  radio.channel = { nr: 16, mode: '00', label: '16' }
+  assert.equal(radio.step(1, true), true)
+  assert.equal(radio.getState().channel.nr, 16)
+  radio.marked = [1, 88]
+  radio.channel = { nr: 88, mode: '00', label: '88' }
+  assert.equal(radio.step(1, 'marked'), true)
+  assert.equal(radio.getState().channel.nr, 1)
+  assert.equal(radio.getState().scanMode, '')
 
   radio.setChannel(3)
   radio.radio.busy = true
@@ -221,5 +248,52 @@ test('scan steps to the next enabled channel and stops', async () => {
   const stopped = udp.sent.length
   await wait(40)
   assert.equal(udp.sent.length, stopped)
+
+  radio.scanResumeSeconds = 0.12
+  radio.setChannel(3)
+  const held = udp.sent.length
+  radio.radio.busy = true
+  radio.scan(false)
+  await wait(50)
+  assert.equal(udp.sent.length, held)
+  radio.radio.busy = false
+  await wait(50)
+  assert.equal(udp.sent.length, held)
+  await wait(150)
+  assert.ok(udp.sent.length > held)
+
+  radio.stopScan()
+  radio.setChannel(3)
+  radio.scan(false)
+  await wait(30)
+  const during = radio.getState().channel.nr
+  assert.equal(radio.nudgeScan(), true)
+  assert.equal(radio.getState().scanMode, 'all')
+  assert.notEqual(radio.getState().channel.nr, during)
+
+  radio.stopScan()
+  radio.channel = { nr: 16, mode: '00', label: '16' }
+  radio.marked = [16]
+  radio.followList = [12]
+  radio.includeFollow = true
+  assert.equal(radio.step(1, 'marked'), true)
+  assert.equal(radio.getState().channel.nr, 12)
+  radio.includeFollow = false
+  radio.channel = { nr: 12, mode: '00', label: '12' }
+  assert.equal(radio.step(1, 'marked'), true)
+  assert.equal(radio.getState().channel.nr, 16)
   radio.stop()
+})
+
+test('PTT stops a quiet scan and talks during the quiet timer', () => {
+  const radio = session(fakeUdp())
+  radio.scanMode = 'marked'
+  radio.radio.busy = false
+  radio.scanHolding = false
+  assert.equal(radio.pressPtt(), 'stopped')
+  assert.equal(radio.scanMode, '')
+  radio.scanMode = 'marked'
+  radio.scanHolding = true
+  radio.pressPtt()
+  assert.equal(radio.scanMode, '')
 })

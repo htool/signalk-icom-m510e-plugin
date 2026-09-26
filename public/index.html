@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <meta name="theme-color" content="#000000">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <link rel="icon" href="icon.png">
+  <link rel="apple-touch-icon" href="icon.png">
+  <title>ICOM M510</title>
+  <script src="NoSleep.min.js"></script>
+  <link rel="stylesheet" href="app.css?v=20260925step">
+</head>
+<body>
+  <main class="phone">
+    <header class="top">
+      <h1>Radio</h1>
+      <button id="mute" class="lock" type="button" aria-label="Sound" aria-pressed="false">
+        <svg class="on" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10v4h4l5 4V6L8 10H4z"/><path d="M16 9a4 4 0 0 1 0 6M18 7a7 7 0 0 1 0 10"/></svg>
+        <svg class="off" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10v4h4l5 4V6L8 10H4z"/><path d="M17 9l5 6M22 9l-5 6"/></svg>
+      </button>
+      <button id="lock" class="lock" type="button" aria-label="Lock" aria-pressed="false">
+        <svg class="open" viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0"/></svg>
+        <svg class="shut" viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
+      </button>
+    </header>
+    <div class="accent"></div>
+    <nav class="tabs">
+      <button type="button" class="tab on" data-panel="radio">RADIO</button>
+      <button type="button" class="tab" data-panel="intercom">INTERCOM</button>
+      <span class="link-row">
+        <span id="link" class="link off">Disconnected</span>
+        <button id="take" class="take" type="button" hidden>Take over</button>
+      </span>
+    </nav>
+
+    <section id="panel-radio" class="panel">
+      <div class="readout">
+        <div class="meta">
+          <button id="power" class="power" type="button" aria-label="Hi/Lo">1W</button>
+          <span class="flags">
+            <button id="fav" class="star" type="button" aria-label="Favourite">☆</button>
+            <input id="mark" type="checkbox" aria-label="Marked">
+          </span>
+          <span id="bank"></span>
+        </div>
+        <div class="channel-row">
+          <button id="ch-down" class="step" type="button" aria-label="Channel down">−</button>
+          <div id="channel" class="channel">--</div>
+          <button id="ch-up" class="step" type="button" aria-label="Channel up">+</button>
+        </div>
+        <div id="name" class="name"> </div>
+        <p id="status" class="status">offline</p>
+        <p id="marked" class="marked"></p>
+        <label class="sql-row"><span>Squelch <output id="sql-out">0</output></span>
+          <input id="sql" type="range" min="0" max="10" value="0">
+          <span></span>
+        </label>
+        <div class="live-row">
+          <button id="back10" class="jump" type="button" aria-label="Back 10 seconds">
+            <svg viewBox="0 0 64 64" aria-hidden="true"><path d="M20 18a18 18 0 1 1-4 14" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round"/><path d="M20 10v12H32" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/><text x="34" y="40" text-anchor="middle">10</text></svg>
+          </button>
+          <label class="live-slider"><span id="live-label">0m00s / 0m00s</span>
+            <input id="live" type="range" min="0" max="100" step="0.1" value="100">
+          </label>
+          <button id="fwd10" class="jump" type="button" aria-label="Forward 10 seconds">
+            <svg viewBox="0 0 64 64" aria-hidden="true"><path d="M44 18a18 18 0 1 0 4 14" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round"/><path d="M44 10v12H32" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/><text x="30" y="40" text-anchor="middle">10</text></svg>
+          </button>
+        </div>
+      </div>
+      <div class="tools">
+        <button id="auto" type="button">Auto follow</button>
+        <button id="scan-all" type="button">Scan</button>
+        <button id="scan-marked" type="button">Scan marked</button>
+        <button id="scan-fav" type="button">Scan favourites</button>
+      </div>
+      <button id="ptt" class="ptt" type="button" aria-label="Spreekknop">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M6 11a6 6 0 0 0 12 0M12 17v3M9 20h6"/></svg>
+      </button>
+    </section>
+
+    <section id="panel-intercom" class="panel hidden">
+      <div class="readout">
+        <div class="channel" id="icom-title">INT</div>
+        <div class="name">Intercom with the radio</div>
+        <p id="icom-state" class="status">Not in a call</p>
+      </div>
+      <button id="icom" class="ptt" type="button" aria-label="Intercom">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10a8 8 0 0 1 16 0"/><rect x="8" y="9" width="8" height="8" rx="2"/><path d="M12 17v3"/></svg>
+      </button>
+    </section>
+
+  </main>
+
+  <script src="app.js?v=20260925step"></script>
+</body>
+</html>

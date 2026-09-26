@@ -1,8 +1,11 @@
 const dgram = require('dgram')
+const fs = require('fs')
 const os = require('os')
+const path = require('path')
 const NmeaParser = require('@signalk/nmea0183-signalk')
 const { RadioSession } = require('./radio')
-const { parseChannelCommand } = require('./protocol')
+const { channelsFromFollowValue, parseChannelCommand, rtpPayload, mulawToPcm, pcmToMulaw } = require('./protocol')
+const { createAudioBuffer, RATE: AUDIO_RATE } = require('./audio-buffer')
 
 module.exports = function (app) {
   const plugin = {}
@@ -10,9 +13,14 @@ module.exports = function (app) {
   let session = null
   let options = {}
   let autoFollow = false
-  let desiredChannel = ''
+  let marked = []
+  let desiredChannels = []
   let putRegistered = false
   let nmeaParser = null
+  const audioClients = new Map()
+  let audioPlayer = null
+  let audioListener = ''
+  const audioBuffer = createAudioBuffer()
 
   plugin.id = 'signalk-icom-m510e-plugin'
   plugin.name = 'ICOM M510E plugin'
@@ -27,12 +35,18 @@ module.exports = function (app) {
           default: 'communication.vhf.autofollow',
         },
         followPath: {
-          title: 'Follow the channel published on this path',
+          title: 'Signal K path of the nearest VHF station',
+          description: 'VHFinfo JSON object, for example resources.vhfdata.nearest.0. The channel is read from that value.',
           default: 'resources.vhfdata.nearest.0',
           type: 'string',
         },
         silence: {
-          title: 'Silence time in seconds before changing channel',
+          title: 'Auto follow: seconds of silence before changing channel',
+          default: 30,
+          type: 'number',
+        },
+        scanResume: {
+          title: 'Scan: seconds of silence before resuming',
           default: 30,
           type: 'number',
         },
@@ -40,37 +54,176 @@ module.exports = function (app) {
     }
   }
 
+  let resume = null
+
   plugin.start = function (opts) {
+    const saved = resume
+    resume = null
     shutdown()
     options = opts || {}
     autoFollow = false
-    desiredChannel = ''
+    marked = loadMarked()
+    desiredChannels = []
     if (!nmeaParser) nmeaParser = new NmeaParser()
     subscribe()
     ensurePut()
+    startAudio()
     session = new RadioSession({
       localIp: localIpv4(),
       udp: dgram,
       debug: (message) => app.debug(message),
       onNmea: handleNmea,
       onUpdate: publish,
+      onRtp: forwardAudio,
+      scanResumeSeconds: scanResumeSeconds(),
     })
-    session.start()
+    session.marked = marked
+    session.favOverride = loadFavourites()
+    session.start(saved)
     app.debug('Plugin started')
   }
 
   plugin.stop = function () {
-    shutdown()
+    const closing = shutdown()
     app.debug('Plugin stopped')
+    return Promise.resolve(closing).then((saved) => {
+      resume = saved
+    })
+  }
+
+  let refreshHoldUntil = 0
+
+  function startAudio () {
+    if (typeof app.registerWebSocket !== 'function') return
+    const socket = app.registerWebSocket('/audio')
+    socket.on('connection', (ws, req) => {
+      const client = { cursor: audioBuffer.end(), live: true, statusAt: 0, ip: clientAddress(req, ws) }
+      audioClients.set(ws, client)
+      const previous = audioPlayer && audioPlayer !== ws ? audioClients.get(audioPlayer) : null
+      if (previous) {
+        client.cursor = previous.cursor
+        client.live = previous.live
+      }
+      if (audioPlayer && audioPlayer !== ws && audioPlayer.readyState === 1) {
+        try { audioPlayer.send(JSON.stringify({ role: 'following', audio: client.ip })) } catch (err) {}
+      }
+      audioPlayer = ws
+      publishAudio(client.ip)
+      try { ws.send(JSON.stringify({ role: 'player', audio: client.ip })) } catch (err) {}
+      const timer = setInterval(() => pumpAudio(ws), 100)
+      ws.on('message', (data, isBinary) => {
+        if (isAudioFrame(data, isBinary)) {
+          if (ws !== audioPlayer || !client.talk || !session) return
+          session.sendVoice(pcmToMulaw(Buffer.from(data)))
+          return
+        }
+        let msg = null
+        try { msg = JSON.parse(String(data)) } catch (err) { return }
+        if (!msg) return
+        if (msg.op === 'claim') {
+          const held = audioPlayer && audioPlayer !== ws && audioPlayer.readyState === 1 && Date.now() < refreshHoldUntil
+          if (held && !msg.refresh) {
+            try { ws.send(JSON.stringify({ role: 'following' })) } catch (err) {}
+            return
+          }
+          if (msg.refresh) refreshHoldUntil = Date.now() + 4000
+          const leaving = audioPlayer && audioPlayer !== ws ? audioClients.get(audioPlayer) : null
+          if (leaving) {
+            client.cursor = leaving.cursor
+            client.live = leaving.live
+          }
+          if (audioPlayer && audioPlayer !== ws && audioPlayer.readyState === 1) {
+            try { audioPlayer.send(JSON.stringify({ role: 'following', audio: client.ip })) } catch (err) {}
+          }
+          audioPlayer = ws
+          publishAudio(client.ip)
+          try { ws.send(JSON.stringify({ role: 'player', audio: client.ip })) } catch (err) {}
+          return
+        }
+        if (ws !== audioPlayer) return
+        if (msg.op === 'talk') {
+          if (!msg.down) {
+            client.talk = ''
+            if (session) session.endTalk()
+            return
+          }
+          const mode = msg.mode === 'intercom' ? 'intercom' : 'ptt'
+          if (mode === 'ptt' && session) {
+            const result = session.pressPtt()
+            if (result === 'stopped') {
+              try { ws.send(JSON.stringify({ talk: 'stopped' })) } catch (err) {}
+              return
+            }
+            client.talk = result === 'talk' ? 'ptt' : ''
+            return
+          }
+          client.talk = mode
+          if (session) session.beginTalk(mode)
+          return
+        }
+        if (msg.op !== 'seek') return
+        if (Number.isFinite(msg.sample)) client.cursor = audioBuffer.clamp(msg.sample)
+        else if (Number.isFinite(msg.seconds)) client.cursor = audioBuffer.sampleAt(msg.seconds)
+        client.live = audioBuffer.end() - client.cursor < AUDIO_RATE * 0.4
+        client.statusAt = 0
+      })
+      ws.on('close', () => {
+        clearInterval(timer)
+        if (client.talk && session) session.endTalk()
+        if (audioPlayer === ws) {
+          audioPlayer = null
+          publishAudio(null)
+        }
+        audioClients.delete(ws)
+      })
+    })
+    publishAudio('')
+  }
+
+  function publishAudio (ip) {
+    audioListener = ip || ''
+    app.handleMessage(plugin.id, {
+      updates: [{ values: [{ path: 'communication.vhf.audio', value: audioListener }] }],
+    })
+  }
+
+  function pumpAudio (ws) {
+    const client = audioClients.get(ws)
+    if (!client || ws !== audioPlayer || ws.readyState !== 1) return
+    const behind = audioBuffer.end() - client.cursor
+    const samples = client.live ? Math.min(behind, AUDIO_RATE * 0.2) : Math.min(behind, AUDIO_RATE * 0.1)
+    if (samples > 0) {
+      const chunk = audioBuffer.read(client.cursor, samples)
+      const frame = Buffer.alloc(6 + chunk.pcm.length)
+      frame.writeUInt32LE(chunk.sample >>> 0, 0)
+      frame.writeUInt16LE(chunk.pcm.length / 2, 4)
+      chunk.pcm.copy(frame, 6)
+      ws.send(frame)
+      client.cursor = chunk.sample + chunk.pcm.length / 2
+      if (!client.live && audioBuffer.end() - client.cursor < AUDIO_RATE * 0.3) client.live = true
+    }
+    const now = Date.now()
+    if (now - client.statusAt > 200) {
+      client.statusAt = now
+      const place = audioBuffer.info(client.cursor)
+      ws.send(JSON.stringify({ duration: place.duration, at: place.at, sample: client.cursor }))
+    }
+  }
+
+  function forwardAudio (packet) {
+    const payload = rtpPayload(packet)
+    if (!payload) return
+    const pcm = mulawToPcm(payload)
+    audioBuffer.append(pcm)
   }
 
   function shutdown () {
     unsubscribes.forEach((unsubscribe) => unsubscribe())
     unsubscribes = []
-    if (session) {
-      session.stop()
-      session = null
-    }
+    if (!session) return null
+    const closing = session.stop()
+    session = null
+    return closing
   }
 
   function autoFollowPath () {
@@ -83,6 +236,10 @@ module.exports = function (app) {
 
   function silenceSeconds () {
     return Number.isFinite(options.silence) ? options.silence : 30
+  }
+
+  function scanResumeSeconds () {
+    return Number.isFinite(options.scanResume) ? options.scanResume : 30
   }
 
   function subscribe () {
@@ -103,38 +260,45 @@ module.exports = function (app) {
   }
 
   function handleData (values) {
-    if (!values || !values[0]) return
-    const sample = values[0]
-    if (sample.path === autoFollowPath()) {
-      const text = String(sample.value).toLowerCase()
-      autoFollow = text === '1' || text === 'true' || text === 'on'
-      app.debug(`autoFollow set to: ${autoFollow}`)
-      return
-    }
-    if (sample.path !== followPath()) return
-    let payload = sample.value
-    if (typeof payload === 'string') {
-      try {
-        payload = JSON.parse(payload)
-      } catch (err) {
-        app.debug(`follow path is not JSON: ${err.message}`)
-        return
+    if (!values) return
+    for (const sample of values) {
+      if (!sample) continue
+      if (sample.path === autoFollowPath()) {
+        const text = String(sample.value).toLowerCase()
+        autoFollow = text === '1' || text === 'true' || text === 'on'
+        app.debug(`autoFollow set to: ${autoFollow}`)
+        continue
       }
+      if (sample.path !== followPath()) continue
+      desiredChannels = channelsFromFollowValue(sample.value)
+      app.debug(`follow channels from ${followPath()}: ${desiredChannels.join(',')}`)
     }
-    desiredChannel = payload && payload.channel != null ? String(payload.channel) : ''
     if (session) maybeFollow(session.getState())
   }
 
   function maybeFollow (state) {
-    if (!autoFollow || !session || state.radio.status !== 'online' || !desiredChannel) return
-    const wanted = parseChannelCommand(desiredChannel)
+    if (!session) return
+    const userScan = session.scanMode === 'marked' || session.scanMode === 'favourites' || session.scanMode === 'all'
+    session.followList = desiredChannels
+    session.includeFollow = autoFollow && desiredChannels.length > 0 && userScan
+    const following = session.scanMode === 'follow'
+    if (!autoFollow || state.radio.status !== 'online' || desiredChannels.length < 2 || userScan) {
+      if (following) session.stopScan()
+    }
+    if (!autoFollow || state.radio.status !== 'online' || userScan) return
+    if (desiredChannels.length > 1) {
+      if (!session.scanMode) session.scan('follow')
+      return
+    }
+    if (desiredChannels.length !== 1) return
+    const wanted = parseChannelCommand(String(desiredChannels[0]))
     if (!wanted || wanted.op !== 'set') return
     if (state.channel) {
       const current = parseChannelCommand(state.channel.label)
       if (current && current.index === wanted.index) return
     }
     if (!state.quietSince || (Date.now() - state.quietSince) / 1000 <= silenceSeconds()) return
-    session.setChannel(wanted.index)
+    session.setChannel(wanted.index, { force: true })
   }
 
   function handleNmea (sentence) {
@@ -157,21 +321,22 @@ module.exports = function (app) {
       values.push({ path: base + '.port', value: radio.port })
     }
     if (radio.status) values.push({ path: base + '.status', value: radio.status })
-    if (typeof radio.busy === 'boolean') values.push({ path: base + '.busy', value: radio.busy })
     if (typeof radio.squelch === 'number') values.push({ path: base + '.squelch', value: radio.squelch })
     if (typeof radio.horn === 'boolean') values.push({ path: base + '.horn', value: radio.horn })
+    if (typeof radio.scanning === 'boolean') values.push({ path: base + '.scanning', value: radio.scanning })
+    if (typeof radio.dualwatch === 'boolean') values.push({ path: base + '.dualwatch', value: radio.dualwatch })
+    if (typeof radio.intercom === 'boolean') values.push({ path: base + '.intercom', value: radio.intercom })
+    values.push({ path: base + '.channelGroup', value: radio.status === 'online' ? (radio.channelGroup || '') : '' })
+    values.push({ path: base + '.bank', value: '' })
     if (radio.status === 'online' && state.silence != null) {
       values.push({ path: base + '.silence', value: state.silence })
     }
-    values.push({ path: base + '.channel', value: channel ? channel.label : '' })
-    if (channel) {
-      pushDefined(values, base + '.watt', channel.watt)
-      pushDefined(values, base + '.duplex', channel.duplex)
-      pushDefined(values, base + '.hilo', channel.hilo)
-      pushDefined(values, base + '.name', channel.name)
-      pushDefined(values, base + '.fav', channel.fav)
-      pushDefined(values, base + '.enabled', channel.enabled)
-    }
+    const document = channelDocument(channel)
+    if (document) values.push({ path: base + '.channel', value: document })
+    values.push({ path: base + '.audio', value: audioListener })
+    values.push({ path: base + '.marked', value: marked.slice() })
+    values.push({ path: base + '.scanMode', value: state.scanMode || '' })
+    values.push({ path: base + '.autofollow', value: autoFollow === true })
     app.handleMessage(plugin.id, { updates: [{ values }] })
     maybeFollow(state)
   }
@@ -180,22 +345,194 @@ module.exports = function (app) {
     if (putRegistered) return
     putRegistered = true
     app.registerPutHandler('vessels.self', 'communication.vhf.channel', apiChangeChannel, 'somesource.1')
+    app.registerPutHandler('vessels.self', 'communication.vhf.squelch', apiSquelch, 'somesource.1')
+    app.registerPutHandler('vessels.self', 'communication.vhf.watt', apiPower, 'somesource.1')
+    app.registerPutHandler('vessels.self', 'communication.vhf.scanning', apiScan, 'somesource.1')
+    app.registerPutHandler('vessels.self', 'communication.vhf.dualwatch', apiDualwatch, 'somesource.1')
+    app.registerPutHandler('vessels.self', 'communication.vhf.ptt', apiPtt, 'somesource.1')
+    app.registerPutHandler('vessels.self', 'communication.vhf.intercom', apiIntercom, 'somesource.1')
+    app.registerPutHandler('vessels.self', 'communication.vhf.autofollow', apiAutoFollow, 'somesource.1')
+    app.registerPutHandler('vessels.self', 'communication.vhf.marked', apiMarked, 'somesource.1')
+    app.registerPutHandler('vessels.self', 'communication.vhf.scanMode', apiScanMode, 'somesource.1')
+    app.registerPutHandler('vessels.self', 'communication.vhf.fav', apiFavourite, 'somesource.1')
+  }
+
+  function apiFavourite (context, path, value, callback) {
+    const finish = (statusCode) => {
+      const reply = { state: 'COMPLETED', statusCode }
+      callback(reply)
+      return reply
+    }
+    if (String(value) !== 'toggle') return finish(400)
+    if (!session || !session.toggleFavourite()) return finish(400)
+    saveFavourites(session.favOverride)
+    return finish(200)
+  }
+
+  function apiAutoFollow (context, path, value, callback) {
+    const text = String(value).toLowerCase()
+    if (text === 'toggle') autoFollow = !autoFollow
+    else autoFollow = text === '1' || text === 'true' || text === 'on'
+    const reply = { state: 'COMPLETED', statusCode: 200 }
+    callback(reply)
+    if (session) publish(session.getState())
+    return reply
+  }
+
+  function apiMarked (context, path, value, callback) {
+    const finish = (statusCode) => {
+      const reply = { state: 'COMPLETED', statusCode }
+      callback(reply)
+      return reply
+    }
+    if (!session || session.channel == null || session.channel.nr == null) return finish(400)
+    const nr = Number(session.channel.nr)
+    if (String(value) !== 'toggle') return finish(400)
+    marked = marked.indexOf(nr) >= 0 ? marked.filter((item) => item !== nr) : marked.concat(nr).sort((a, b) => a - b)
+    session.marked = marked
+    saveMarked()
+    publish(session.getState())
+    return finish(200)
+  }
+
+  function apiScanMode (context, path, value, callback) {
+    const finish = (statusCode) => {
+      const reply = { state: 'COMPLETED', statusCode }
+      callback(reply)
+      return reply
+    }
+    if (!session || session.getState().radio.status !== 'online') return finish(400)
+    const mode = String(value)
+    if (mode !== 'marked' && mode !== 'favourites' && mode !== 'all' && mode !== 'off') return finish(400)
+    if (mode === 'off' || session.scanMode === mode) {
+      session.stopScan()
+      return finish(200)
+    }
+    if (mode === 'marked' && !marked.length) return finish(400)
+    session.marked = marked
+    session.scan(mode === 'marked' ? 'marked' : mode === 'favourites')
+    return finish(200)
+  }
+
+  function apiWhenOnline (action, callback) {
+    const finish = (statusCode) => {
+      const reply = { state: 'COMPLETED', statusCode }
+      callback(reply)
+      return reply
+    }
+    if (!session || session.getState().radio.status !== 'online') return finish(400)
+    if (!action()) return finish(400)
+    return finish(200)
+  }
+
+  function apiSquelch (context, path, value, callback) {
+    apiWhenOnline(() => session.setSquelch(value), callback)
+  }
+
+  function apiPower (context, path, value, callback) {
+    apiWhenOnline(() => session.togglePower(), callback)
+  }
+
+  function apiScan (context, path, value, callback) {
+    apiWhenOnline(() => session.toggleRadioScan(), callback)
+  }
+
+  function apiDualwatch (context, path, value, callback) {
+    apiWhenOnline(() => session.toggleDualwatch(), callback)
+  }
+
+  function apiPtt (context, path, value, callback) {
+    const down = value === true || value === 1 || value === '1' || value === 'down'
+    apiWhenOnline(() => session.setPtt(down), callback)
+  }
+
+  function apiIntercom (context, path, value, callback) {
+    const talking = value === true || value === 'talk' || value === 'begin'
+    apiWhenOnline(() => session.setIntercom(talking), callback)
   }
 
   function apiChangeChannel (context, path, value, callback) {
     const online = session && session.getState().radio.status === 'online'
     const command = online ? parseChannelCommand(value) : null
     if (!command) {
-      callback({ state: 'COMPLETED', statusCode: 400 })
-      return
+      const reply = { state: 'COMPLETED', statusCode: 400 }
+      callback(reply)
+      return reply
     }
-    if (command.op === 'scanStop') session.stopScan()
-    else if (command.op === 'scanAll') session.scan(false)
-    else if (command.op === 'scanFav') session.scan(true)
-    else if (command.op === '+1') session.step(1, false)
-    else if (command.op === '-1') session.step(-1, false)
-    else session.setChannel(command.index)
-    callback({ state: 'COMPLETED', statusCode: 200 })
+    let ok = false
+    if (command.op === 'scanStop') {
+      session.stopScan()
+      ok = true
+    } else if (command.op === 'scanAll') {
+      session.scan(false)
+      ok = true
+    } else if (command.op === 'scanFav') {
+      session.scan(true)
+      ok = true
+    } else if (command.op === '+1') ok = session.scanMode ? session.nudgeScan() : session.step(1, false)
+    else if (command.op === '-1') ok = session.step(-1, false)
+    else ok = session.setChannel(command.index)
+    const reply = { state: 'COMPLETED', statusCode: ok ? 200 : 400 }
+    callback(reply)
+    return reply
+  }
+
+  function favouritesFile () {
+    if (typeof app.getDataDirPath !== 'function') return ''
+    return path.join(app.getDataDirPath(), 'favourites.json')
+  }
+
+  function loadFavourites () {
+    try {
+      const file = favouritesFile()
+      if (!file) return Object.create(null)
+      const data = JSON.parse(fs.readFileSync(file, 'utf8'))
+      const overrides = Object.create(null)
+      if (!data || typeof data !== 'object') return overrides
+      for (const [key, value] of Object.entries(data)) overrides[key] = value === true
+      return overrides
+    } catch (err) {
+      return Object.create(null)
+    }
+  }
+
+  function saveFavourites (overrides) {
+    try {
+      const file = favouritesFile()
+      if (!file) return
+      fs.mkdirSync(path.dirname(file), { recursive: true })
+      fs.writeFileSync(file, JSON.stringify(overrides))
+    } catch (err) {
+      app.debug(`favourites save failed: ${err.message}`)
+    }
+  }
+
+  function markedFile () {
+    if (typeof app.getDataDirPath !== 'function') return ''
+    return path.join(app.getDataDirPath(), 'marked.json')
+  }
+
+  function loadMarked () {
+    try {
+      const file = markedFile()
+      if (!file) return []
+      const data = JSON.parse(fs.readFileSync(file, 'utf8'))
+      if (!Array.isArray(data)) return []
+      return data.map(Number).filter((nr) => nr >= 1 && nr <= 88)
+    } catch (err) {
+      return []
+    }
+  }
+
+  function saveMarked () {
+    try {
+      const file = markedFile()
+      if (!file) return
+      fs.mkdirSync(path.dirname(file), { recursive: true })
+      fs.writeFileSync(file, JSON.stringify(marked))
+    } catch (err) {
+      app.debug(`marked save failed: ${err.message}`)
+    }
   }
 
   return plugin
@@ -212,6 +549,37 @@ function localIpv4 () {
   return '127.0.0.1'
 }
 
-function pushDefined (values, path, value) {
-  if (value !== undefined && value !== null) values.push({ path, value })
+function isAudioFrame (data, isBinary) {
+  if (isBinary === true) return true
+  if (isBinary === false) return false
+  return Buffer.isBuffer(data) && (data.length === 0 || data[0] !== 0x7b)
 }
+
+function channelDocument (channel) {
+  if (!channel || channel.nr == null) return null
+  return {
+    nr: channel.nr,
+    duplex: channel.duplex === true,
+    hilo: channel.hilo === true,
+    fav: channel.fav === true,
+    name: channel.name || '',
+    watt: channel.watt == null ? null : channel.watt,
+    mode: channel.mode || '00',
+    enabled: channel.enabled !== false,
+    busy: channel.busy === true,
+  }
+}
+
+module.exports.channelDocument = channelDocument
+module.exports.isAudioFrame = isAudioFrame
+
+function clientAddress (req, ws) {
+  const forwarded = req && req.headers && req.headers['x-forwarded-for']
+  const sock = (ws && ws._socket) || (req && req.socket) || {}
+  const raw = forwarded
+    ? String(forwarded).split(',')[0].trim()
+    : sock.remoteAddress || ''
+  return raw.startsWith('::ffff:') ? raw.slice(7) : raw
+}
+
+module.exports.clientAddress = clientAddress

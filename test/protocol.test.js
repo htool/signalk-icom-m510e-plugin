@@ -98,6 +98,11 @@ test('status round-trip', () => {
   assert.equal(message.busy, true)
   assert.equal(message.watt, 25)
   assert.equal(message.hilo, true)
+  assert.equal(message.groupName, 5)
+  assert.equal(protocol.channelGroupLabel(message.groupName, message.wx), 'ATIS')
+  assert.equal(protocol.channelGroupLabel(2, true), 'WX')
+  assert.equal(protocol.channelGroupLabel(1, false), 'USA')
+  assert.equal(protocol.channelGroupLabel(0, false), '')
   assert.equal(protocol.formatChannel(31, '00'), '31')
   assert.equal(protocol.formatChannel(37, '10'), '1037')
 })
@@ -137,7 +142,7 @@ test('discovery, sign-in, table request, ask, squelch, and keepalive match the o
   const squelch = protocol.encodeSquelch(src, radio, 0x5d, 4)
   assert.equal(
     squelch.toString('hex'),
-    '49636f6d01000000' + legacyIp(src) + legacyIp(radio) + '010200001000000002035d0030005d000205040007000000'
+    '49636f6d01020000' + legacyIp(src) + legacyIp(radio) + '01000000080000000300000002000400'
   )
   assert.equal(protocol.encodeKeepAlive().toString('hex'), '800100')
 })
@@ -165,8 +170,16 @@ test('names, properties, horn, and favourite frames', () => {
   const parsedProperties = protocol.classify(properties)
   assert.equal(parsedProperties.type, 'properties')
   assert.deepEqual(protocol.propertyRecords(parsedProperties.payload), [
-    { fav: true, enabled: true, watt: 25, duplex: true },
+    { fav: false, enabled: true, watt: 25, duplex: true },
+    { fav: false, enabled: true, watt: 25, duplex: true },
+    { fav: false, enabled: true, watt: 25, duplex: true },
   ])
+  assert.deepEqual(protocol.channelFlags(0xe2), {
+    fav: true,
+    enabled: false,
+    watt: 1,
+    duplex: false,
+  })
 
   const horn = Buffer.alloc(32)
   horn.write('Icom')
@@ -174,6 +187,16 @@ test('names, properties, horn, and favourite frames', () => {
   horn[26] = 0x50
   horn.writeUInt32LE(8, 20)
   assert.deepEqual(protocol.classify(horn), { type: 'horn', on: true, frame: protocol.decodeFrame(horn) })
+})
+
+test('set-favourite frame is 46 bytes with the on and off flags', () => {
+  const on = protocol.encodeSetFavourite('192.168.2.1', '192.168.2.18', 48, true)
+  const off = protocol.encodeSetFavourite('192.168.2.1', '192.168.2.18', 48, false)
+  assert.equal(on.length, 46)
+  assert.equal(on.readUInt32LE(16), 0x90)
+  assert.equal(on.readUInt16LE(28), 48)
+  assert.equal(on[32], 0x00)
+  assert.equal(off[32], 0x40)
 })
 
 test('favourite flag and property bits keep the old expansion', () => {
@@ -190,6 +213,27 @@ test('favourite flag and property bits keep the old expansion', () => {
   }
 })
 
+test('nearest VHF value yields one channel', () => {
+  const station = {
+    id: 'lock-near',
+    name: 'Near lock',
+    type: 'lock',
+    channel: '12/16',
+    distance: -12,
+  }
+  assert.equal(protocol.channelFromFollowValue(JSON.stringify(station)), '12')
+  assert.equal(protocol.channelFromFollowValue(station), '12')
+  assert.equal(protocol.channelFromFollowValue({ properties: { channel: '04 / 65' } }), '4')
+  assert.equal(protocol.channelFromFollowValue({ channel: 22 }), '22')
+  assert.equal(protocol.channelFromFollowValue('71/72,73'), '71')
+  assert.deepEqual(protocol.channelsFromFollowValue('71/72,73'), [71, 72, 73])
+  assert.deepEqual(protocol.channelsFromFollowValue({ channel: '04 / 65' }), [4, 65])
+  assert.deepEqual(protocol.channelsFromFollowValue([{ channel: '12' }, { channel: '16/12' }]), [12, 16])
+  assert.equal(protocol.channelFromFollowValue(null), '')
+  assert.equal(protocol.channelFromFollowValue('null'), '')
+  assert.deepEqual(protocol.parseChannelCommand('12'), { op: 'set', index: 36 })
+})
+
 test('channel commands and the scan walk', () => {
   assert.deepEqual(protocol.parseChannelCommand('+1'), { op: '+1' })
   assert.deepEqual(protocol.parseChannelCommand('scanFav'), { op: 'scanFav' })
@@ -204,6 +248,23 @@ test('channel commands and the scan walk', () => {
   assert.equal(protocol.nextChannelIndex(6, 1, accept), 3)
   assert.equal(protocol.nextChannelIndex(0, 1, (index) => index === 0), null)
   assert.equal(protocol.nextChannelIndex(3, -1, (index) => index === 1), 1)
+})
+
+test('voice RTP payload decodes μ-law silence to PCM', () => {
+  const packet = Buffer.alloc(13)
+  packet[0] = 0x80
+  packet[1] = 0x00
+  packet[12] = 0xff
+  const payload = protocol.rtpPayload(packet)
+  assert.equal(payload.length, 1)
+  assert.equal(protocol.mulawToPcm(payload).readInt16LE(0), 0)
+  assert.equal(protocol.rtpPayload(Buffer.from('Icom')), null)
+  const encoded = protocol.pcmToMulaw(Buffer.from([0x00, 0x00]))
+  assert.equal(encoded[0], 0xff)
+  const rtp = protocol.encodeRtp(encoded, 1, 320, 0x2250b644)
+  assert.equal(rtp[0], 0x80)
+  assert.equal(rtp.length, 13)
+  assert.equal(protocol.rtpPayload(rtp)[0], 0xff)
 })
 
 test('rejects a truncated Icom frame and ignores the odd keepalive nibble', () => {

@@ -2,11 +2,11 @@
 //
 //   0  "Icom"
 //   4  0x01
-//   5  marker (0xff discover/sign-in, 0x02 set-channel, 0x00 other)
+//   5  source device (0xff discover, 0x02 phone, 0x00 radio)
 //   8  source IPv4, little-endian
 //  12  destination IPv4, little-endian
-//  16  command, uint32 little-endian
-//  20  body length, uint32 little-endian
+//  16  payload type and subtype, little-endian
+//  20  body length, uint16 little-endian, then two pad bytes
 //  24  body
 //
 // Channel numbers are an index: channel * 3 + mode, modes 00 / 10 / 20.
@@ -156,17 +156,7 @@ function encodeAskChannel (srcIp, dstIp) {
 }
 
 function encodeSetChannel (srcIp, dstIp, index) {
-  const body = Buffer.alloc(8)
-  body[0] = 0x03
-  body[4] = 0x01
-  body.writeUInt16LE(index, 6)
-  return encodeFrame({
-    srcIp,
-    dstIp,
-    marker: Marker.SET_CHANNEL,
-    command: Command.SET_CHANNEL,
-    body,
-  })
+  return encodeOperation(srcIp, dstIp, OperationKey.CH, index)
 }
 
 function encodeStatus (srcIp, dstIp, index, fields = {}) {
@@ -191,22 +181,48 @@ function encodeStatus (srcIp, dstIp, index, fields = {}) {
 }
 
 // Level is 0-10. The channel index belongs in the same slots the status frame uses.
-function encodeSquelch (srcIp, dstIp, index, level) {
-  const body = Buffer.alloc(16)
-  body[0] = 0x02
-  body[1] = 0x03
-  body.writeUInt16LE(index, 2)
-  body.writeUInt16LE(0x0030, 4)
-  body.writeUInt16LE(index, 6)
-  body[8] = 0x02
-  body[9] = 0x05
-  body[10] = level
-  body[12] = 0x07
+// Phone operation, the same packet RS-M500 sends for a key.
+// Body: request byte, 3 pad bytes, uint16 key, int16 option.
+const OperationKey = {
+  OFF: 0,
+  CH: 1,
+  SQL: 2,
+  PTT: 3,
+  TX_POWER: 4,
+  SCAN: 5,
+  DUALWATCH: 6,
+}
+
+function encodeOperation (srcIp, dstIp, key, option) {
+  const body = Buffer.alloc(8)
+  body[0] = 0x03
+  body.writeUInt16LE(key, 4)
+  body.writeInt16LE(option, 6)
   return encodeFrame({
     srcIp,
     dstIp,
-    marker: Marker.PLAIN,
-    command: Command.STATUS,
+    marker: Marker.SET_CHANNEL,
+    command: Command.SET_CHANNEL,
+    body,
+  })
+}
+
+function encodeSquelch (srcIp, dstIp, index, level) {
+  return encodeOperation(srcIp, dstIp, OperationKey.SQL, level)
+}
+
+// The radio announces a favourite in a 46-byte frame: channel index at byte 28,
+// flag at byte 32. High nibble 0/2 means on, 4/6 means off. Command 0x90 matches
+// the handset's favourite frames. Key 7 is the first operation past dualwatch.
+function encodeSetFavourite (srcIp, dstIp, index, on) {
+  const body = Buffer.alloc(22)
+  body.writeUInt16LE(index, 4)
+  body[8] = on ? 0x00 : 0x40
+  return encodeFrame({
+    srcIp,
+    dstIp,
+    marker: Marker.SET_CHANNEL,
+    command: 0x90,
     body,
   })
 }
@@ -215,28 +231,65 @@ function encodeKeepAlive () {
   return Buffer.from([0x80, 0x01, 0x00])
 }
 
+// Master-state BF2 from RS-M500: bit 3 is high power, bit 2 can switch power.
+// RS-M500 CH_GROUP_NAME, with the weather flag overriding the corner label.
+const GROUP_NAMES = ['', 'USA', 'INT', 'CAN', 'DSC', 'ATIS']
+
+function channelGroupLabel (name, wx) {
+  if (wx) return 'WX'
+  const index = Number(name)
+  if (!Number.isInteger(index) || index < 0 || index >= GROUP_NAMES.length) return ''
+  return GROUP_NAMES[index]
+}
+
 function decodePower (byte) {
-  switch (byte) {
-    case 0x03: return { watt: 1, hilo: false }
-    case 0x07: return { watt: 1, hilo: true }
-    case 0x0b: return { watt: 1, hilo: true }
-    case 0x0f: return { watt: 25, hilo: true }
-    default: return null
+  return {
+    watt: (byte & 0x08) !== 0 ? 25 : 1,
+    hilo: (byte & 0x04) !== 0,
   }
 }
 
 function parseStatus (body) {
-  if (!body || body.length < 13 || body[0] !== 0x00 || body[1] !== 0xff) return null
+  if (!body || body.length < 13) return null
   const power = decodePower(body[12])
   return {
     index: body.readUInt16LE(2),
     indexRepeat: body.readUInt16LE(6),
     squelch: body[10],
     busy: (body[11] & 0x80) !== 0,
+    wx: (body[11] & 0x08) !== 0,
+    groupName: body.length > 9 ? body[9] : 0,
     watt: power ? power.watt : null,
     hilo: power ? power.hilo : null,
     power: body[12],
+    intercom: (body[12] & 0x20) !== 0,
+    scanning: body.length > 13 && (body[13] & 0x40) !== 0,
+    dualwatch: body.length > 13 && (body[13] & 0x08) !== 0,
   }
+}
+
+// Intercom operation from RS-M500: sender is the phone, receiver is the radio.
+const IntercomCommand = {
+  END: 0,
+  BEGIN: 1,
+  END_TALK: 2,
+  BEGIN_TALK: 3,
+}
+
+function encodeIntercom (srcIp, dstIp, command) {
+  const body = Buffer.alloc(8)
+  body[0] = 0x03
+  body[1] = 0x01
+  body[2] = 0x02
+  body[3] = 0x00
+  body[4] = command
+  return encodeFrame({
+    srcIp,
+    dstIp,
+    marker: Marker.SET_CHANNEL,
+    command: 0x00000002,
+    body,
+  })
 }
 
 function parseAck (body) {
@@ -293,16 +346,20 @@ function fieldsFromPropertyBits (bits) {
   }
 }
 
+// One CH_FLAGS1 byte per channel, from RS-M500 MarineCHList:
+// bit 7 channel inhibited, bit 6 favourite (SKIP), bit 5 low-power only, bit 1 simplex.
+function channelFlags (byte) {
+  return {
+    fav: (byte & 0x40) !== 0,
+    enabled: (byte & 0x80) === 0,
+    watt: (byte & 0x20) !== 0 ? 1 : 25,
+    duplex: (byte & 0x02) === 0,
+  }
+}
+
 function propertyRecords (bytes) {
   const records = []
-  let offset = 0
-  while (offset + 3 <= bytes.length) {
-    const bits = propertyBits(bytes[offset]) +
-      propertyBits(bytes[offset + 1]) +
-      propertyBits(bytes[offset + 2])
-    records.push(fieldsFromPropertyBits(bits))
-    offset += 3
-  }
+  for (const byte of bytes) records.push(channelFlags(byte))
   return records
 }
 
@@ -347,6 +404,63 @@ function isKeepAlive (buffer) {
 
 function isRtp (buffer) {
   return buffer.length >= 12 && (buffer[0] >> 6) === 2 && (buffer[1] & 0x7f) === 0
+}
+
+function rtpPayload (buffer) {
+  if (!isRtp(buffer)) return null
+  const cc = buffer[0] & 0x0f
+  let offset = 12 + cc * 4
+  if ((buffer[0] & 0x10) !== 0) {
+    if (buffer.length < offset + 4) return null
+    offset += 4 + buffer.readUInt16BE(offset + 2) * 4
+  }
+  if (offset >= buffer.length) return null
+  return buffer.subarray(offset)
+}
+
+function mulawSample (byte) {
+  const value = (~byte) & 0xff
+  const sign = value & 0x80
+  const exponent = (value >> 4) & 0x07
+  const mantissa = value & 0x0f
+  let sample = (((mantissa << 3) + 0x84) << exponent) - 0x84
+  return sign ? -sample : sample
+}
+
+function mulawToPcm (payload) {
+  const pcm = Buffer.alloc(payload.length * 2)
+  for (let i = 0; i < payload.length; i++) pcm.writeInt16LE(mulawSample(payload[i]), i * 2)
+  return pcm
+}
+
+function pcmToMulaw (pcm) {
+  const samples = Math.floor(pcm.length / 2)
+  const out = Buffer.alloc(samples)
+  for (let i = 0; i < samples; i++) out[i] = pcmToMulawSample(pcm.readInt16LE(i * 2))
+  return out
+}
+
+function pcmToMulawSample (sample) {
+  const CLIP = 32635
+  let sign = (sample >> 8) & 0x80
+  if (sign) sample = -sample
+  if (sample > CLIP) sample = CLIP
+  sample += 0x84
+  let exponent = 7
+  for (let mask = 0x4000; (sample & mask) === 0 && exponent > 0; exponent -= 1, mask >>= 1) {}
+  const mantissa = (sample >> (exponent + 3)) & 0x0f
+  return (~(sign | (exponent << 4) | mantissa)) & 0xff
+}
+
+function encodeRtp (payload, sequence, timestamp, ssrc) {
+  const frame = Buffer.alloc(12 + payload.length)
+  frame[0] = 0x80
+  frame[1] = 0x00
+  frame.writeUInt16BE(sequence & 0xffff, 2)
+  frame.writeUInt32BE(timestamp >>> 0, 4)
+  frame.writeUInt32BE(ssrc >>> 0, 8)
+  payload.copy(frame, 12)
+  return frame
 }
 
 function classify (buffer) {
@@ -403,6 +517,54 @@ function formatChannel (nr, mode) {
   return mode + String(nr).padStart(2, '0')
 }
 
+// VHFinfo publishes a station, a list of stations, or a channel string
+// such as "22", "12/16" or "04 / 65". Every channel number is kept.
+function channelsFromFollowValue (value) {
+  const found = []
+  function addRaw (raw) {
+    String(raw == null ? '' : raw).trim().split(/[\s/,]+/).forEach((part) => {
+      if (!/^\d{1,4}$/.test(part)) return
+      const nr = Number.parseInt(part, 10)
+      if (nr < 1 || nr > MAX_CHANNEL || found.indexOf(nr) >= 0) return
+      found.push(nr)
+    })
+  }
+  function walk (payload) {
+    if (payload == null || payload === '') return
+    if (Array.isArray(payload)) {
+      payload.forEach(walk)
+      return
+    }
+    if (typeof payload === 'string') {
+      const text = payload.trim()
+      if (!text || text === 'null') return
+      try {
+        const parsed = JSON.parse(text)
+        if (parsed && typeof parsed === 'object') {
+          walk(parsed)
+          return
+        }
+      } catch (err) {}
+      addRaw(text)
+      return
+    }
+    if (typeof payload === 'number') {
+      addRaw(payload)
+      return
+    }
+    if (typeof payload !== 'object') return
+    if (payload.channel != null) addRaw(payload.channel)
+    else if (payload.properties && payload.properties.channel != null) addRaw(payload.properties.channel)
+  }
+  walk(value)
+  return found
+}
+
+function channelFromFollowValue (value) {
+  const channels = channelsFromFollowValue(value)
+  return channels.length ? String(channels[0]) : ''
+}
+
 function parseChannelCommand (value) {
   const text = String(value)
   if (text === 'scanStop' || text === 'scanAll' || text === 'scanFav' || text === '+1' || text === '-1') {
@@ -444,23 +606,36 @@ module.exports = {
   encodeSignIn,
   encodeChannelTableRequest,
   encodeAskChannel,
+  OperationKey,
   encodeSetChannel,
+  encodeOperation,
   encodeStatus,
   encodeSquelch,
+  encodeSetFavourite,
+  IntercomCommand,
+  encodeIntercom,
   encodeKeepAlive,
   decodePower,
+  channelGroupLabel,
   parseStatus,
   parseNames,
   parseProperties,
   propertyBits,
   favouriteFromFlag,
   fieldsFromPropertyBits,
+  channelFlags,
   propertyRecords,
   readNmeaSentences,
   classify,
+  rtpPayload,
+  mulawToPcm,
+  pcmToMulaw,
+  encodeRtp,
   splitIndex,
   channelIndex,
   formatChannel,
+  channelFromFollowValue,
+  channelsFromFollowValue,
   parseChannelCommand,
   nextChannelIndex,
 }
