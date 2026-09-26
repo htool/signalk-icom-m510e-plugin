@@ -532,6 +532,7 @@ let bufferMarks = []
 let lastSample = null
 let draggingLive = false
 let seekHold = null
+let seekAudioFrom = null
 const queued = []
 
 function formatClock (seconds) {
@@ -613,6 +614,7 @@ function askSeek (seconds) {
   const at = Math.max(0, Math.min(Math.max(0, bufferDuration), Number(seconds) || 0))
   bufferAt = at
   seekHold = at
+  seekAudioFrom = null
   lastSample = null
   showLive()
   cutPlayback()
@@ -681,6 +683,7 @@ function startSpeaker (takeover) {
           showLive()
           return
         }
+        if (seekHold != null && Number.isFinite(info.sample)) seekAudioFrom = info.sample
         seekHold = null
         bufferAt = at
         showLive()
@@ -697,7 +700,13 @@ function startSpeaker (takeover) {
     const view = new DataView(data)
     const sample = view.getUint32(0, true)
     const count = view.getUint16(4, true)
-    if (lastSample != null && sample + 400 < lastSample) cutPlayback()
+    if (seekHold != null) return
+    if (seekAudioFrom != null) {
+      if (sample < seekAudioFrom) return
+      seekAudioFrom = null
+      lastSample = null
+    }
+    if (lastSample != null && sample + 400 < lastSample) return
     else if (lastSample != null && sample > lastSample + 1600) {
       socket.send(JSON.stringify({ op: 'seek', sample: lastSample }))
       return
