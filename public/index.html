@@ -9,7 +9,7 @@
   <link rel="apple-touch-icon" href="icon.png">
   <title>ICOM M510</title>
   <script src="NoSleep.min.js"></script>
-  <link rel="stylesheet" href="app.css?v=20260925step">
+  <link rel="stylesheet" href="app.css?v=20260926wake">
 </head>
 <body>
   <main class="phone">
@@ -52,10 +52,13 @@
         <div id="name" class="name"> </div>
         <p id="status" class="status">offline</p>
         <p id="marked" class="marked"></p>
-        <label class="sql-row"><span>Squelch <output id="sql-out">0</output></span>
-          <input id="sql" type="range" min="0" max="10" value="0">
-          <span></span>
-        </label>
+        <div class="sql-row">
+          <button id="sql-down" class="sql-step" type="button" aria-label="Squelch down">−</button>
+          <label class="sql-slider"><span>Squelch <output id="sql-out">0</output></span>
+            <input id="sql" type="range" min="0" max="10" value="0">
+          </label>
+          <button id="sql-up" class="sql-step" type="button" aria-label="Squelch up">+</button>
+        </div>
         <div class="live-row">
           <button id="back10" class="jump" type="button" aria-label="Back 10 seconds">
             <svg viewBox="0 0 64 64" aria-hidden="true"><path d="M20 18a18 18 0 1 1-4 14" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round"/><path d="M20 10v12H32" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/><text x="34" y="40" text-anchor="middle">10</text></svg>
@@ -92,6 +95,6 @@
 
   </main>
 
-  <script src="app.js?v=20260925step"></script>
+  <script src="app.js?v=20260926wake"></script>
 </body>
 </html>

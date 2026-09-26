@@ -203,7 +203,7 @@ class RadioSession {
         if ((!entry || entry.fav !== true) && !this.followInScan(nr)) continue
         return this.setChannel(index, { force: true })
       }
-      return this.setChannel(index, { force: true, direction })
+      return this.setChannel(index, this.scanMode ? { force: true } : { force: true, direction })
     }
     return false
   }
@@ -487,6 +487,7 @@ class RadioSession {
     this.radio.intercom = status.intercom === true
     this.radio.channelGroup = protocol.channelGroupLabel(status.groupName, status.wx)
     if (wasBusy && !status.busy) this.quietSince = Date.now()
+    if (this.scanMode) this.seek = null
     if (this.seek && status.index === this.seek.index) {
       this.seek = null
       if (this.refused) this.refused.delete(status.index)

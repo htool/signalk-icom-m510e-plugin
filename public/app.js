@@ -43,26 +43,28 @@ function render () {
   $('fav').textContent = state.fav ? '★' : '☆'
   $('fav').classList.toggle('on', state.fav)
   const online = state.status === 'online'
-  const following = online && !hearing
+  const following = online && !controlling
   const statusText = authNote || (online ? '' : (state.status || 'offline'))
   $('status').textContent = statusText
   $('status').hidden = !statusText
   const follower = state.audio ? `Following ${state.audio}` : 'Following'
-  $('link').textContent = !online ? 'Disconnected' : (hearing ? 'Connected' : follower)
-  $('link').classList.toggle('on', online && hearing)
-  $('link').classList.toggle('follow', online && !hearing)
+  $('link').textContent = !online ? 'Disconnected' : (controlling ? 'Connected' : follower)
+  $('link').classList.toggle('on', online && controlling)
+  $('link').classList.toggle('follow', following)
   $('link').classList.toggle('off', !online)
   document.querySelector('.live-row').classList.toggle('off', !hearing)
-  $('auto').classList.toggle('on', !following && state.autofollow)
-  $('scan-all').classList.toggle('on', !following && state.scanMode === 'all')
-  $('scan-marked').classList.toggle('on', !following && state.scanMode === 'marked')
-  $('scan-fav').classList.toggle('on', !following && state.scanMode === 'favourites')
+  $('auto').classList.toggle('on', state.autofollow)
+  $('scan-all').classList.toggle('on', state.scanMode === 'all')
+  $('scan-marked').classList.toggle('on', state.scanMode === 'marked')
+  $('scan-fav').classList.toggle('on', state.scanMode === 'favourites')
   const current = Number(state.nr)
   const markedNow = state.marked.indexOf(current) >= 0
   if ($('mark').checked !== markedNow) $('mark').checked = markedNow
   $('marked').textContent = state.marked.length ? `Marked: ${state.marked.join(', ')}` : 'Marked: none'
-  $('sql').value = state.squelch
-  $('sql-out').textContent = String(state.squelch)
+  if (!draggingSql) {
+    $('sql').value = state.squelch
+    $('sql-out').textContent = String(state.squelch)
+  }
   $('ptt').classList.toggle('busy', state.busy && !state.locked)
   $('icom-state').textContent = state.intercom ? 'In a call' : 'Not in a call'
   $('icom').classList.toggle('hot', !following && state.intercom)
@@ -80,7 +82,13 @@ function applyValue (path, value) {
   const key = path.split('.').pop()
   if (key === 'channel') applyChannel(value)
   else if (key === 'nr' || key === 'name' || key === 'mode' || key === 'watt' || key === 'fav' || key === 'hilo' || key === 'duplex' || key === 'enabled') return
-  else if (key === 'squelch') state.squelch = Number(value) || 0
+  else if (key === 'squelch') {
+    const level = Number(value) || 0
+    if (draggingSql) return
+    if (expectSquelch != null && level !== expectSquelch) return
+    expectSquelch = null
+    state.squelch = level
+  }
   else if (key === 'status') {
     state.status = value || 'offline'
     if (state.status !== 'online') {
@@ -222,7 +230,7 @@ async function requestDeviceAccess () {
 }
 
 function handsOff () {
-  return state.locked || (state.status === 'online' && !hearing)
+  return state.locked || (state.status === 'online' && !controlling)
 }
 
 function guard (event, action) {
@@ -275,20 +283,14 @@ function subscribe () {
 
 const noSleep = new NoSleep()
 let wakeLockEnabled = false
-function setWake (on) {
-  if (on) {
-    if (wakeLockEnabled) return
-    noSleep.enable()
-    wakeLockEnabled = true
-    return
-  }
-  if (!wakeLockEnabled) return
-  noSleep.disable()
-  wakeLockEnabled = false
+function setWake () {
+  if (wakeLockEnabled) return
+  noSleep.enable()
+  wakeLockEnabled = true
 }
 $('lock').addEventListener('click', () => {
   state.locked = !state.locked
-  setWake(!state.locked)
+  setWake()
   render()
 })
 document.querySelectorAll('.tab').forEach((button) => {
@@ -385,12 +387,33 @@ function sameNumbers (left, right) {
 let expectMark = null
 let expectFollow = null
 let expectScan = null
-$('sql').addEventListener('change', () => {
+let expectSquelch = null
+let expectSquelchTimer = null
+let draggingSql = false
+
+function commitSquelch (level) {
   if (handsOff()) return
-  state.squelch = Number($('sql').value)
+  const n = Math.max(0, Math.min(10, Math.round(Number(level))))
+  expectSquelch = n
+  clearTimeout(expectSquelchTimer)
+  expectSquelchTimer = setTimeout(() => { expectSquelch = null }, 1500)
+  state.squelch = n
   render()
-  put('communication.vhf.squelch', state.squelch).catch(() => {})
-})
+  put('communication.vhf.squelch', n).catch(() => {})
+}
+
+$('sql').addEventListener('pointerdown', () => { draggingSql = true })
+$('sql').addEventListener('input', () => { $('sql-out').textContent = String($('sql').value) })
+function finishSquelch () {
+  if (!draggingSql) return
+  draggingSql = false
+  commitSquelch($('sql').value)
+}
+$('sql').addEventListener('pointerup', finishSquelch)
+$('sql').addEventListener('pointercancel', finishSquelch)
+$('sql').addEventListener('change', finishSquelch)
+$('sql-down').addEventListener('click', () => commitSquelch(Number(state.squelch) - 1))
+$('sql-up').addEventListener('click', () => commitSquelch(Number(state.squelch) + 1))
 
 function hold (button, mode) {
   button.addEventListener('selectstart', (event) => event.preventDefault())
@@ -421,11 +444,9 @@ let talkQueue = []
 
 function beginTalk (mode) {
   unlockAudio()
-  yielded = false
-  pageClaim = true
   const ctx = ensureAudio()
   if (ctx) ctx.resume()
-  startSpeaker(true)
+  startSpeaker(false)
   const sendDown = () => {
     if (speaker && speaker.readyState === 1) speaker.send(JSON.stringify({ op: 'talk', mode, down: true }))
   }
@@ -489,8 +510,7 @@ function setMuted (value) {
   try { localStorage.setItem('skRadioMuted', muted ? '1' : '0') } catch (e) {}
   $('mute').setAttribute('aria-pressed', muted ? 'true' : 'false')
   $('mute').setAttribute('aria-label', muted ? 'Sound on' : 'Sound off')
-  if (muted || document.hidden) stopSpeaker()
-  else if (audioArmed) startSpeaker()
+  if (!muted && audioArmed && !speaker) startSpeaker(false)
 }
 
 function ensureAudio () {
@@ -584,14 +604,13 @@ function askSeek (seconds) {
   lastSample = null
   showLive()
   cutPlayback()
-  if (!hearing || !speaker || speaker.readyState !== 1) return
+  if (!speaker || speaker.readyState !== 1) return
   speaker.send(JSON.stringify({ op: 'seek', seconds: at }))
 }
 
 let speaker = null
 let hearing = false
-let yielded = false
-let pageClaim = true
+let controlling = false
 
 function stopSpeaker () {
   const socket = speaker
@@ -601,18 +620,22 @@ function stopSpeaker () {
   audioNext = 0
 }
 
-function startSpeaker (force) {
-  if ((muted && !force) || (speaker && speaker.readyState < 2)) return
+function startSpeaker (takeover) {
+  if (speaker && speaker.readyState === 1) {
+    if (takeover) speaker.send(JSON.stringify({ op: 'claim', takeover: true }))
+    return
+  }
+  if (speaker && speaker.readyState < 2) return
   const url = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/plugins/signalk-icom-m510e-plugin/audio`
   const socket = new WebSocket(url)
   speaker = socket
   socket.binaryType = 'arraybuffer'
   socket.addEventListener('open', () => {
-    if (yielded || speaker !== socket) {
+    if (speaker !== socket) {
       socket.close()
       return
     }
-    socket.send(JSON.stringify({ op: 'claim', refresh: pageClaim }))
+    socket.send(JSON.stringify({ op: 'claim', takeover: takeover === true }))
     if (lastSample != null) socket.send(JSON.stringify({ op: 'seek', sample: lastSample }))
   })
   socket.addEventListener('message', (event) => {
@@ -620,14 +643,11 @@ function startSpeaker (force) {
       const info = JSON.parse(event.data)
       if (info.role === 'following') {
         if (speaker !== socket) return
-        const wasHearing = hearing
-        hearing = false
-        yielded = true
-        pageClaim = false
+        hearing = true
+        controlling = false
         if (info.audio) state.audio = info.audio
-        if (wasHearing) releaseControls()
+        releaseTalk()
         render()
-        stopSpeaker()
         return
       }
       if (info.talk === 'stopped') {
@@ -637,8 +657,7 @@ function startSpeaker (force) {
       }
       if (info.role === 'player') {
         hearing = true
-        yielded = false
-        pageClaim = false
+        controlling = true
         if (info.audio) state.audio = info.audio
         render()
       }
@@ -654,8 +673,11 @@ function startSpeaker (force) {
     }
     const raw = event.data
     const playRaw = (data) => {
-    if (!hearing) return
     if (!(data instanceof ArrayBuffer) || data.byteLength < 6) return
+    if (!hearing) {
+      hearing = true
+      render()
+    }
     const view = new DataView(data)
     const sample = view.getUint32(0, true)
     const count = view.getUint16(4, true)
@@ -673,22 +695,22 @@ function startSpeaker (force) {
   socket.addEventListener('close', () => {
     if (speaker !== socket) return
     speaker = null
-    if (!muted && !yielded && !document.hidden) setTimeout(startSpeaker, 2000)
+    hearing = false
+    controlling = false
+    render()
+    if (!muted && !document.hidden) setTimeout(() => startSpeaker(false), 2000)
   })
 }
 
-$('back10').addEventListener('click', () => { if (!handsOff()) askSeek(bufferAt - 10) })
-$('fwd10').addEventListener('click', () => { if (!handsOff()) askSeek(bufferAt + 10) })
+$('back10').addEventListener('click', () => askSeek(bufferAt - 10))
+$('fwd10').addEventListener('click', () => askSeek(bufferAt + 10))
 $('live').addEventListener('pointerdown', () => { draggingLive = true })
 $('live').addEventListener('input', () => {
   const at = secondsFromLivePercent($('live').value)
   $('live-label').textContent = `${formatClock(at)} / ${formatClock(bufferDuration)}`
 })
 const finishSeek = () => {
-  if (!draggingLive || handsOff()) {
-    draggingLive = false
-    return
-  }
+  if (!draggingLive) return
   draggingLive = false
   askSeek(secondsFromLivePercent($('live').value))
 }
@@ -711,60 +733,27 @@ function unlockAudio () {
   ctx.resume()
 }
 
-document.querySelector('.phone').addEventListener('click', () => {
-  if (!state.locked) setWake(true)
-})
 document.querySelector('.phone').addEventListener('pointerdown', () => {
+  setWake()
   unlockAudio()
-  if (muted || document.hidden || yielded) return
-  if (!speaker) startSpeaker()
+  if (muted || document.hidden) return
+  if (!speaker) startSpeaker(false)
 }, true)
-let hideTimer = null
 document.addEventListener('visibilitychange', () => {
-  if (document.hidden) {
-    clearTimeout(hideTimer)
-    hideTimer = setTimeout(() => {
-      if (!document.hidden || pageClaim) return
-      const wasHearing = hearing
-      yielded = true
-      hearing = false
-      if (wasHearing) releaseControls()
-      render()
-      stopSpeaker()
-    }, 700)
-    return
-  }
-  clearTimeout(hideTimer)
-  if (yielded || muted) return
-  startSpeaker()
+  if (document.hidden || muted || speaker) return
+  startSpeaker(false)
 })
 $('take').addEventListener('click', () => {
-  yielded = false
-  pageClaim = true
-  lastSample = null
-  seekHold = null
   ensureAudio()
   startSpeaker(true)
 })
-function releaseControls () {
+function releaseTalk () {
   document.querySelectorAll('.ptt.hot').forEach((button) => button.classList.remove('hot'))
   endTalk()
-  if (state.scanMode) {
-    expectScan = ''
-    state.scanMode = ''
-    put('communication.vhf.scanMode', 'off').catch(() => {})
-  }
-  if (state.autofollow) {
-    expectFollow = false
-    state.autofollow = false
-    put('communication.vhf.autofollow', 'false').catch(() => {})
-  }
 }
 function claimOnLoad () {
-  yielded = false
-  pageClaim = true
   if (muted) return
-  startSpeaker(true)
+  startSpeaker(false)
 }
 window.addEventListener('pageshow', claimOnLoad)
 setMuted(muted)

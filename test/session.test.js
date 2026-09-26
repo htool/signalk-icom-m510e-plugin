@@ -285,6 +285,30 @@ test('scan steps to the next enabled channel and stops', async () => {
   radio.stop()
 })
 
+test('a slow status during scan does not skip extra channels', async () => {
+  const udp = fakeUdp()
+  const radio = session(udp, { scanIntervalMs: 5000 })
+  radio.start()
+  radio.radio.ip = '192.168.1.146'
+  radio.radio.port = 50000
+  for (const nr of [16, 17, 18, 19]) radio.ensure(nr, '00').enabled = true
+  radio.channel = { nr: 16, mode: '00', label: '16' }
+  radio.scan(false)
+  await wait(30)
+  assert.equal(radio.getState().channel.nr, 17)
+  assert.equal(radio.seek, null)
+  const before = udp.sent.length
+  radio.inject('control', protocol.encodeStatus('192.168.1.146', '192.168.1.25', protocol.channelIndex(16, '00'), {
+    busy: false,
+    squelch: 3,
+  }), { address: '192.168.1.146', port: 50003 })
+  assert.equal(radio.seek, null)
+  assert.equal(radio.getState().channel.nr, 16)
+  assert.equal(udp.sent.length, before)
+  radio.stopScan()
+  radio.stop()
+})
+
 test('PTT stops a quiet scan and talks during the quiet timer', () => {
   const radio = session(fakeUdp())
   radio.scanMode = 'marked'

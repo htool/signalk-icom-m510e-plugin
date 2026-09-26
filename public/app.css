@@ -124,11 +124,17 @@ body {
 .marked { margin: 2px 0 0; min-height: 1.2em; color: #111; font-size: 18px; font-weight: 400; }
 .sql-row, .live-row {
   display: grid;
-  grid-template-columns: 7.4em 1fr 46px;
+  grid-template-columns: 46px 1fr 46px;
   column-gap: 8px;
   align-items: center;
 }
 .sql-row { margin: 4px 0 0; font-size: 16px; color: var(--ink); }
+.sql-step {
+  width: 36px; height: 36px; justify-self: center;
+  border: 2px solid #c8c8c8; border-radius: 50%; background: #fff; color: #111;
+  font-size: 22px; line-height: 1; padding: 0;
+}
+.sql-slider, .live-slider { min-width: 0; display: flex; flex-direction: column; font-size: 16px; font-weight: 700; color: #111; text-align: left; }
 .sql-row input, .live-slider input { width: 100%; min-width: 0; margin: 0; touch-action: pan-x; }
 .live-row { margin-top: 6px; }
 .live-row.off { opacity: .4; pointer-events: none; }
@@ -138,7 +144,6 @@ body {
 }
 .jump svg { width: 40px; height: 40px; display: block; margin: 0 auto; }
 .jump text { font-size: 15px; font-weight: 700; fill: currentColor; font-family: "Helvetica Neue", Helvetica, Arial, sans-serif; }
-.live-slider { min-width: 0; display: flex; flex-direction: column; font-size: 16px; font-weight: 700; color: #111; text-align: left; }
 input[type="range"] {
   -webkit-appearance: none; appearance: none;
   height: 24px; background: transparent;
@@ -186,6 +191,6 @@ button { font-weight: 700; }
 .ptt.hot, .ptt:active { box-shadow: inset 0 0 0 8px var(--orange); }
 .ptt.busy { box-shadow: inset 0 0 0 8px #e10600; }
 .phone.locked .ptt, .phone.locked .tab, .phone.locked .step, .phone.locked .tools button, .phone.locked .sql-row, .phone.locked .live-row,
-.phone.following .ptt, .phone.following .tab, .phone.following .step, .phone.following .tools button, .phone.following .sql-row, .phone.following .live-row,
+.phone.following .ptt, .phone.following .tab, .phone.following .step, .phone.following .tools button, .phone.following .sql-row,
 .phone.following .power, .phone.following .star, .phone.following #mark { pointer-events: none; opacity: .55; }
 .phone.locked .lock, .phone.following .lock, .phone.following .take { pointer-events: auto; opacity: 1; }

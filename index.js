@@ -18,7 +18,7 @@ module.exports = function (app) {
   let putRegistered = false
   let nmeaParser = null
   const audioClients = new Map()
-  let audioPlayer = null
+  let operator = null
   let audioListener = ''
   const audioBuffer = createAudioBuffer()
 
@@ -96,29 +96,16 @@ module.exports = function (app) {
     })
   }
 
-  let refreshHoldUntil = 0
-
   function startAudio () {
     if (typeof app.registerWebSocket !== 'function') return
     const socket = app.registerWebSocket('/audio')
     socket.on('connection', (ws, req) => {
-      const client = { cursor: audioBuffer.end(), live: true, statusAt: 0, ip: clientAddress(req, ws) }
+      const client = { cursor: audioBuffer.end(), live: true, statusAt: 0, ip: clientAddress(req, ws), talk: '' }
       audioClients.set(ws, client)
-      const previous = audioPlayer && audioPlayer !== ws ? audioClients.get(audioPlayer) : null
-      if (previous) {
-        client.cursor = previous.cursor
-        client.live = previous.live
-      }
-      if (audioPlayer && audioPlayer !== ws && audioPlayer.readyState === 1) {
-        try { audioPlayer.send(JSON.stringify({ role: 'following', audio: client.ip })) } catch (err) {}
-      }
-      audioPlayer = ws
-      publishAudio(client.ip)
-      try { ws.send(JSON.stringify({ role: 'player', audio: client.ip })) } catch (err) {}
       const timer = setInterval(() => pumpAudio(ws), 100)
       ws.on('message', (data, isBinary) => {
         if (isAudioFrame(data, isBinary)) {
-          if (ws !== audioPlayer || !client.talk || !session) return
+          if (ws !== operator || !client.talk || !session) return
           session.sendVoice(pcmToMulaw(Buffer.from(data)))
           return
         }
@@ -126,27 +113,15 @@ module.exports = function (app) {
         try { msg = JSON.parse(String(data)) } catch (err) { return }
         if (!msg) return
         if (msg.op === 'claim') {
-          const held = audioPlayer && audioPlayer !== ws && audioPlayer.readyState === 1 && Date.now() < refreshHoldUntil
-          if (held && !msg.refresh) {
-            try { ws.send(JSON.stringify({ role: 'following' })) } catch (err) {}
-            return
+          const free = !operator || operator.readyState !== 1
+          if (free || msg.takeover === true || operator === ws) setOperator(ws)
+          else {
+            try { ws.send(JSON.stringify({ role: 'following', audio: audioListener })) } catch (err) {}
           }
-          if (msg.refresh) refreshHoldUntil = Date.now() + 4000
-          const leaving = audioPlayer && audioPlayer !== ws ? audioClients.get(audioPlayer) : null
-          if (leaving) {
-            client.cursor = leaving.cursor
-            client.live = leaving.live
-          }
-          if (audioPlayer && audioPlayer !== ws && audioPlayer.readyState === 1) {
-            try { audioPlayer.send(JSON.stringify({ role: 'following', audio: client.ip })) } catch (err) {}
-          }
-          audioPlayer = ws
-          publishAudio(client.ip)
-          try { ws.send(JSON.stringify({ role: 'player', audio: client.ip })) } catch (err) {}
           return
         }
-        if (ws !== audioPlayer) return
         if (msg.op === 'talk') {
+          if (ws !== operator) return
           if (!msg.down) {
             client.talk = ''
             if (session) session.endTalk()
@@ -175,14 +150,28 @@ module.exports = function (app) {
       ws.on('close', () => {
         clearInterval(timer)
         if (client.talk && session) session.endTalk()
-        if (audioPlayer === ws) {
-          audioPlayer = null
+        if (operator === ws) {
+          operator = null
           publishAudio(null)
         }
         audioClients.delete(ws)
       })
     })
     publishAudio('')
+  }
+
+  function setOperator (ws) {
+    const previous = operator && operator !== ws ? operator : null
+    const client = audioClients.get(ws)
+    operator = ws
+    publishAudio(client ? client.ip : '')
+    if (previous && previous.readyState === 1) {
+      const previousClient = audioClients.get(previous)
+      if (previousClient && previousClient.talk && session) session.endTalk()
+      if (previousClient) previousClient.talk = ''
+      try { previous.send(JSON.stringify({ role: 'following', audio: client ? client.ip : '' })) } catch (err) {}
+    }
+    try { ws.send(JSON.stringify({ role: 'player', audio: client ? client.ip : '' })) } catch (err) {}
   }
 
   function publishAudio (ip) {
@@ -194,7 +183,7 @@ module.exports = function (app) {
 
   function pumpAudio (ws) {
     const client = audioClients.get(ws)
-    if (!client || ws !== audioPlayer || ws.readyState !== 1) return
+    if (!client || ws.readyState !== 1) return
     const behind = audioBuffer.end() - client.cursor
     const samples = client.live ? Math.min(behind, AUDIO_RATE * 0.2) : Math.min(behind, AUDIO_RATE * 0.1)
     if (samples > 0) {

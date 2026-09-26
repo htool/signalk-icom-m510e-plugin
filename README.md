@@ -10,13 +10,22 @@ With the plugin installed, Signal K serves the remote at `/signalk-icom-m510e-pl
 
 - Channel, name, 1W/25W, favourite, and the channel-group label (USA, INT, CAN, DSC, ATIS, or WX).
 - Channel down and up. Both keep working while the channel is busy.
-- Squelch (0–10).
+- Squelch from 0 to 10, with − and + beside the slider. The label and the value sit above the slider.
 - Favourite and a marked-channel tick. Marked channels and favourite overrides are stored in the plugin data directory.
-- Scan, Scan marked, and Scan favourites. A scan pauses on a busy channel and resumes after the configured silence time.
+- Scan, Scan marked, and Scan favourites. A scan pauses on a busy channel and resumes after the configured silence time. The channel steps stay on the channel the radio reports, so a slow status does not skip ahead.
 - Auto follow of the nearest VHF station.
 - Push-to-talk, and an intercom tab for a call with the radio.
-- Received audio for one listener at a time, with a rewind buffer and 10-second jumps. Another client sees Following and can Take over. Following releases scan, auto follow, and PTT.
-- Lock blanks the controls and keeps the screen awake. Mute silences playback.
+- Received audio on every open webapp, each with its own rewind buffer and 10-second jumps.
+
+## Webapp states
+
+- **Disconnected.** The radio is offline. The buttons do not drive it.
+- **Connected.** This webapp has the buttons and push-to-talk, and it hears the audio.
+- **Following.** Another webapp has the buttons and push-to-talk. This one still hears the audio and can rewind its own buffer. Take over moves the buttons and push-to-talk here and releases the other webapp's push-to-talk. Scan and auto follow keep running; they belong to the radio.
+- **Locked.** This phone's buttons are blocked so they are not pressed by accident. The screen stays awake either way. Other webapps are unchanged.
+
+Opening a second webapp does not take the buttons. Take over does.
+- Lock blocks the buttons so they are not pressed by accident. The screen stays awake after the first touch. Mute silences playback.
 - Saving the plugin config keeps the existing UDP session with the radio.
 
 There is no DSC remote.
