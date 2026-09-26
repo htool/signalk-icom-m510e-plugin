@@ -1,48 +1,105 @@
 # signalk-icom-m510e-plugin
-Get channel info and set listening channel
 
-## SignalK info
-Radio info is written to:
-```
-communication.vhf.ip        string      IP address of Icom M510E
-                 .port      number      UDP source port
-                 .status    string      offline, Initializing RS-M500, or online
-                 .busy      boolean     Is channel busy?
-                 .silence   number      Seconds since the channel went quiet
-                 .squelch   number      Squelch setting (0-10)
-                 .channel   string      Active channel
-                 .name      string      Channel name from the radio
-                 .fav       boolean     Is favourite?
-                 .duplex    boolean     Is channel duplex?
-                 .hilo      boolean     Allows changing High/Low?
-                 .watt      number      1 or 25 Watt
-                 .enabled   boolean     Is channel enabled
-                 .horn      boolean     Fog horn sounding
-```
+Signal K plugin for an Icom M510E over the radio's WLAN, using the same UDP session as the RS-M500 handset. It publishes the radio state, accepts channel and control commands, and serves a web remote.
+
+![RS-M500 style web remote](screenshot.png)
 
 ## Webapp
 
-With the plugin installed, Signal K serves the RS-M500 style remote at `/signalk-icom-m510e-plugin/`. It shows the channel, name, power and favourite flag, and can change channel, squelch, HI/LO, scan, dualwatch, push-to-talk and intercom. There is no DSC.
+With the plugin installed, Signal K serves the remote at `/signalk-icom-m510e-plugin/`.
 
-## Api
+- Channel, name, 1W/25W, favourite, and the channel-group label (USA, INT, CAN, DSC, ATIS, or WX).
+- Channel down and up. Both keep working while the channel is busy.
+- Squelch (0–10).
+- Favourite and a marked-channel tick. Marked channels and favourite overrides are stored in the plugin data directory.
+- Scan, Scan marked, and Scan favourites. A scan pauses on a busy channel and resumes after the configured silence time.
+- Auto follow of the nearest VHF station.
+- Push-to-talk, and an intercom tab for a call with the radio.
+- Received audio for one listener at a time, with a rewind buffer and 10-second jumps. Another client sees Following and can Take over. Following releases scan, auto follow, and PTT.
+- Lock blanks the controls and keeps the screen awake. Mute silences playback.
+- Saving the plugin config keeps the existing UDP session with the radio.
 
-The following api calls can be made
+There is no DSC remote.
+
+## Signal K
+
+Values are published under `communication.vhf`:
 
 ```
-curl -H "Content-Type: application/json" -X PUT http://localhost:3000/signalk/v1/api/vessels/self/communication/vhf/channel -d '{"value": "+1"}'
+communication.vhf.ip            string    Radio IP, while a session exists
+                 .port          number    Radio UDP port
+                 .status        string    offline, Initializing RS-M500, or online
+                 .squelch       number    0–10
+                 .horn          boolean   Fog horn sounding
+                 .scanning      boolean   Radio scan flag
+                 .dualwatch     boolean   Dual watch
+                 .intercom      boolean   Intercom call
+                 .channelGroup  string    USA, INT, CAN, DSC, ATIS, WX, or empty
+                 .silence       number    Seconds since the channel went quiet
+                 .channel       object    Active channel, see below
+                 .audio         string    IP of the client that has the audio, or empty
+                 .marked        number[]  Channel numbers ticked in the webapp
+                 .scanMode      string    all, marked, favourites, or empty
+                 .autofollow    boolean   Auto follow is on
 ```
-where `value` is `-1` for channel down, `+1` for channel up or a channel number in 4 characters, e.g. `2019` or `0001`.
 
-Auto-follow reads the nearest station from the path set in the plugin config (`resources.vhfdata.nearest.0` by default). That value is the VHFinfo JSON object. Its `channel` field is used, and a list such as `12/16` tunes the first channel.
+`communication.vhf.bank` is written as an empty string so an older value does not linger. Channel group lives on `channelGroup`.
 
-## NMEA 0183
+`communication.vhf.channel` is one object:
 
-After sign-in the radio sends NMEA 0183 datagrams. GPS sentences are in the usual set (`GNRMC`, `GNGSA`, `GPGSV`, `GLGSV`); AIS sentences are forwarded the same way when the set emits them. Each sentence is emitted on the server `nmea0183` event and parsed into a Signal K delta.
+```
+{
+  "nr": 16,
+  "duplex": false,
+  "hilo": true,
+  "fav": true,
+  "name": "CALLING",
+  "watt": 25,
+  "mode": "00",
+  "enabled": true,
+  "busy": false
+}
+```
 
-## NMEA2000 / CT-M500
+`mode` is `00`, `10`, or `20` (the USA, INT, and CAN lists). `watt` is 1 or 25. `busy` is receiving on that channel.
 
-Normally the CT-M500 interface box should be used to create the NMEA2000 connectivity.
-The Icom M510E without AIS seems to have all the AIS software onboard, just not the hardware bits (it seems).
+## API
 
-If we can find out how to inject NMEA2000 (which is probably NMEA0183), most functionality of the CT-M500 can be done in software through a SignalK plugin.
-So if you have access to a CT-M500, I'd like to get in contact.
+PUT `vessels.self` paths. Each call returns `{ "state": "COMPLETED", "statusCode": 200 }` or `400`.
+
+Channel (`communication.vhf.channel`):
+
+```
+curl -H "Content-Type: application/json" -X PUT \
+  http://localhost:3000/signalk/v1/api/vessels/self/communication/vhf/channel \
+  -d '{"value": "+1"}'
+```
+
+`value` is `+1`, `-1`, `scanAll`, `scanFav`, `scanStop`, a channel number (list `00`), or four characters of list plus number, for example `0016`, `1016`, or `2016`.
+
+| Path | Value |
+| --- | --- |
+| `communication.vhf.squelch` | 0–10 |
+| `communication.vhf.watt` | any value toggles 1W / 25W |
+| `communication.vhf.scanning` | any value toggles the radio scan |
+| `communication.vhf.dualwatch` | any value toggles dual watch |
+| `communication.vhf.ptt` | `true`, `1`, or `down` presses; anything else releases |
+| `communication.vhf.intercom` | `true`, `talk`, or `begin` starts; anything else ends |
+| `communication.vhf.autofollow` | `toggle`, or `1` / `true` / `on` |
+| `communication.vhf.marked` | `toggle` for the active channel number |
+| `communication.vhf.scanMode` | `all`, `marked`, `favourites`, or `off` |
+| `communication.vhf.fav` | `toggle` |
+
+Auto follow reads the nearest station from the path set in the plugin config (`resources.vhfdata.nearest.0` by default). That value is the JSON object published by the [VHFinfo plugin](https://github.com/htool/vhfinfo). Its `channel` field is used, and a list such as `12/16` tunes the first channel.
+
+## Plugin config
+
+| Setting | Default |
+| --- | --- |
+| Path to check for auto-follow mode | `communication.vhf.autofollow` |
+| Signal K path of the nearest VHF station | `resources.vhfdata.nearest.0` |
+| Auto follow: seconds of silence before changing channel | 30 |
+| Scan: seconds of silence before resuming | 30 |
+| Icom M510E IP | empty; discovery is broadcast |
+
+The nearest-station path is a JSON object from the [VHFinfo plugin](https://github.com/htool/vhfinfo). When the IP is set, discovery is sent to that address instead of the broadcast.
