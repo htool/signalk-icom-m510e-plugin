@@ -13,6 +13,44 @@ test('one minute of audio puts the halfway point at 30 seconds', () => {
   assert.equal(Math.round(audio.info(halfway).at), 30)
 })
 
+test('channel marks follow the sample that was recorded', () => {
+  const audio = createAudioBuffer()
+  const second = Buffer.alloc(RATE * 2)
+  audio.append(second, 16)
+  audio.append(second, 16)
+  audio.append(second, 72)
+  assert.equal(audio.info(audio.sampleAt(0.5)).channel, 16)
+  assert.equal(audio.info(audio.sampleAt(2.5)).channel, 72)
+  const marks = audio.info(audio.end()).marks
+  assert.equal(marks.length, 2)
+  assert.equal(marks[0].channel, 16)
+  assert.equal(marks[1].channel, 72)
+  assert.ok(marks[1].at >= 1.9 && marks[1].at <= 2.1)
+})
+
+test('a channel mark older than the buffer is dropped', () => {
+  const audio = createAudioBuffer()
+  const second = Buffer.alloc(RATE * 2)
+  for (let i = 0; i < 300; i++) audio.append(second, 6)
+  for (let i = 0; i < 300; i++) audio.append(second, 16)
+  const info = audio.info(audio.sampleAt(1))
+  assert.equal(info.channel, 16)
+  assert.equal(info.marks.length, 1)
+  assert.equal(info.marks[0].channel, 16)
+})
+
+test('buffer length follows the configured seconds', () => {
+  const audio = createAudioBuffer(2)
+  const second = Buffer.alloc(RATE * 2)
+  audio.append(second, 6)
+  audio.append(second, 6)
+  audio.append(second, 16)
+  audio.append(second, 16)
+  const info = audio.info(audio.sampleAt(0))
+  assert.equal(Math.round(info.duration), 2)
+  assert.equal(info.channel, 16)
+})
+
 test('a seek before the buffer starts at the oldest sample', () => {
   const audio = createAudioBuffer()
   audio.append(Buffer.alloc(RATE * 2))

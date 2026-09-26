@@ -20,7 +20,7 @@ module.exports = function (app) {
   const audioClients = new Map()
   let operator = null
   let audioListener = ''
-  const audioBuffer = createAudioBuffer()
+  let audioBuffer = createAudioBuffer()
 
   plugin.id = 'signalk-icom-m510e-plugin'
   plugin.name = 'ICOM M510E plugin'
@@ -54,6 +54,12 @@ module.exports = function (app) {
           title: "Specify Icom M510e ip address in case it's not auto-detected",
           type: 'string',
         },
+        audioBufferMinutes: {
+          title: 'Audio buffer length in minutes',
+          description: 'How much received audio is kept for rewind.',
+          default: 5,
+          type: 'number',
+        },
       },
     }
   }
@@ -65,6 +71,7 @@ module.exports = function (app) {
     resume = null
     shutdown()
     options = opts || {}
+    audioBuffer = createAudioBuffer(audioBufferSeconds())
     autoFollow = false
     marked = loadMarked()
     desiredChannels = []
@@ -200,7 +207,13 @@ module.exports = function (app) {
     if (now - client.statusAt > 200) {
       client.statusAt = now
       const place = audioBuffer.info(client.cursor)
-      ws.send(JSON.stringify({ duration: place.duration, at: place.at, sample: client.cursor }))
+      ws.send(JSON.stringify({
+        duration: place.duration,
+        at: place.at,
+        sample: client.cursor,
+        channel: place.channel,
+        marks: place.marks,
+      }))
     }
   }
 
@@ -208,7 +221,9 @@ module.exports = function (app) {
     const payload = rtpPayload(packet)
     if (!payload) return
     const pcm = mulawToPcm(payload)
-    audioBuffer.append(pcm)
+    const state = session ? session.getState() : null
+    const nr = state && state.channel ? state.channel.nr : null
+    audioBuffer.append(pcm, nr)
   }
 
   function shutdown () {
@@ -234,6 +249,12 @@ module.exports = function (app) {
 
   function scanResumeSeconds () {
     return Number.isFinite(options.scanResume) ? options.scanResume : 30
+  }
+
+  function audioBufferSeconds () {
+    const minutes = Number(options.audioBufferMinutes)
+    const chosen = Number.isFinite(minutes) && minutes > 0 ? minutes : 5
+    return Math.min(chosen, 120) * 60
   }
 
   function subscribe () {

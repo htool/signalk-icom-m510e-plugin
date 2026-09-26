@@ -15,7 +15,7 @@ With the plugin installed, Signal K serves the remote at `/signalk-icom-m510e-pl
 - Scan, Scan marked, and Scan favourites. A scan pauses on a busy channel and resumes after the configured silence time. The channel steps stay on the channel the radio reports, so a slow status does not skip ahead.
 - Auto follow of the nearest VHF station.
 - Push-to-talk, and an intercom tab for a call with the radio.
-- Received audio on every open webapp, each with its own rewind buffer and 10-second jumps.
+- Received audio on every open webapp, each with its own rewind buffer and 10-second jumps. The time label includes the channel number that was on the radio when that audio arrived.
 
 ## Webapp states
 
@@ -109,6 +109,7 @@ Auto follow reads the nearest station from the path set in the plugin config (`r
 | Signal K path of the nearest VHF station | `resources.vhfdata.nearest.0` |
 | Auto follow: seconds of silence before changing channel | 30 |
 | Scan: seconds of silence before resuming | 30 |
+| Audio buffer length in minutes | 5 |
 | Icom M510E IP | empty; discovery is broadcast |
 
 The nearest-station path is a JSON object from the [VHFinfo plugin](https://github.com/htool/vhfinfo). When the IP is set, discovery is sent to that address instead of the broadcast.

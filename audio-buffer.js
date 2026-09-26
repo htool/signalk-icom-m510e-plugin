@@ -1,21 +1,58 @@
 const RATE = 8000
 const MAX_SECONDS = 300
 
-function createAudioBuffer () {
-  const max = RATE * MAX_SECONDS
+function createAudioBuffer (seconds) {
+  const limit = Number(seconds)
+  const max = RATE * (Number.isFinite(limit) && limit > 0 ? limit : MAX_SECONDS)
   const ring = Buffer.alloc(max * 2)
+  const spans = []
   let write = 0
 
   function start () {
     return Math.max(0, write - max)
   }
 
-  function append (pcm) {
+  function channelNumber (channel) {
+    if (channel == null || channel === '') return null
+    const nr = Number(channel)
+    return Number.isFinite(nr) ? nr : null
+  }
+
+  function trimSpans () {
+    const from = start()
+    while (spans.length > 1 && spans[1].at <= from) spans.shift()
+  }
+
+  function append (pcm, channel) {
     const samples = Math.floor(pcm.length / 2)
+    if (samples <= 0) return
+    const nr = channelNumber(channel)
+    const last = spans[spans.length - 1]
+    if (!last || last.channel !== nr) spans.push({ at: write, channel: nr })
     for (let i = 0; i < samples; i++) {
       pcm.copy(ring, ((write + i) % max) * 2, i * 2, i * 2 + 2)
     }
     write += samples
+    trimSpans()
+  }
+
+  function channelAt (sample) {
+    const at = clamp(sample)
+    let channel = null
+    for (const span of spans) {
+      if (span.at > at) break
+      channel = span.channel
+    }
+    return channel
+  }
+
+  function marks () {
+    const from = start()
+    trimSpans()
+    return spans.map((span) => ({
+      at: Math.max(0, (span.at - from) / RATE),
+      channel: span.channel,
+    }))
   }
 
   function clamp (sample) {
@@ -48,6 +85,8 @@ function createAudioBuffer () {
     return {
       duration: (write - from) / RATE,
       at: (at - from) / RATE,
+      channel: channelAt(at),
+      marks: marks(),
     }
   }
 

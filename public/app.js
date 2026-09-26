@@ -528,6 +528,7 @@ function ensureAudio () {
 
 let bufferDuration = 0
 let bufferAt = 0
+let bufferMarks = []
 let lastSample = null
 let draggingLive = false
 let seekHold = null
@@ -550,9 +551,20 @@ function secondsFromLivePercent (percent) {
   return (p / 100) * Math.max(0, bufferDuration)
 }
 
+function channelAtTime (seconds) {
+  let channel = null
+  for (const mark of bufferMarks) {
+    if (mark.at > seconds + 0.05) break
+    channel = mark.channel
+  }
+  return channel
+}
+
 function showLive () {
   const shown = draggingLive ? secondsFromLivePercent($('live').value) : bufferAt
-  $('live-label').textContent = `${formatClock(shown)} / ${formatClock(bufferDuration)}`
+  const channel = channelAtTime(shown)
+  const prefix = channel == null ? '' : `Channel ${channel} · `
+  $('live-label').textContent = `${prefix}${formatClock(shown)} / ${formatClock(bufferDuration)}`
   if (!draggingLive) $('live').value = String(livePercent())
 }
 
@@ -663,8 +675,12 @@ function startSpeaker (takeover) {
       }
       if (Number.isFinite(info.duration)) {
         bufferDuration = Number(info.duration) || 0
+        if (Array.isArray(info.marks)) bufferMarks = info.marks
         const at = Number(info.at) || 0
-        if (seekHold != null && Math.abs(at - seekHold) > 1.5) return
+        if (seekHold != null && Math.abs(at - seekHold) > 1.5) {
+          showLive()
+          return
+        }
         seekHold = null
         bufferAt = at
         showLive()
@@ -705,10 +721,7 @@ function startSpeaker (takeover) {
 $('back10').addEventListener('click', () => askSeek(bufferAt - 10))
 $('fwd10').addEventListener('click', () => askSeek(bufferAt + 10))
 $('live').addEventListener('pointerdown', () => { draggingLive = true })
-$('live').addEventListener('input', () => {
-  const at = secondsFromLivePercent($('live').value)
-  $('live-label').textContent = `${formatClock(at)} / ${formatClock(bufferDuration)}`
-})
+$('live').addEventListener('input', () => { showLive() })
 const finishSeek = () => {
   if (!draggingLive) return
   draggingLive = false
