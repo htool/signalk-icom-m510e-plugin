@@ -92,6 +92,7 @@ module.exports = function (app) {
     session.marked = marked
     session.favOverride = loadFavourites()
     session.start(saved)
+    unsubscribes.push(subscribeNmeaOut())
     app.debug('Plugin started')
   }
 
@@ -351,6 +352,18 @@ module.exports = function (app) {
     }
   }
 
+  // AIS / other NMEA out → radio display (replaces signalk-ct-m500-plugin for send).
+  function subscribeNmeaOut () {
+    const handler = (sentence) => {
+      if (!session || session.getState().radio.status !== 'online') return
+      session.sendNmea(sentence)
+    }
+    app.on('nmea0183out', handler)
+    return () => {
+      try { app.removeListener('nmea0183out', handler) } catch (err) {}
+    }
+  }
+
   function publish (state, options) {
     const values = []
     const base = 'communication.vhf'
@@ -448,12 +461,12 @@ module.exports = function (app) {
       return reply
     }
     if (!session || session.getState().radio.status !== 'online') return finish(400)
-    const mode = String(value)
-    if (mode !== 'marked' && mode !== 'favourites' && mode !== 'all' && mode !== 'off') return finish(400)
-    if (mode === 'off') {
+    const mode = value == null ? 'off' : String(value)
+    if (mode === '' || mode === 'off') {
       session.stopScan()
       return finish(200)
     }
+    if (mode !== 'marked' && mode !== 'favourites' && mode !== 'all') return finish(400)
     if (session.scanMode === mode) return finish(200)
     if (mode === 'marked' && !marked.length) return finish(400)
     session.marked = marked
@@ -587,13 +600,18 @@ module.exports = function (app) {
 
 function localIpv4 () {
   const interfaces = os.networkInterfaces()
+  const candidates = []
   for (const entries of Object.values(interfaces)) {
     for (const entry of entries || []) {
       const ipv4 = entry.family === 'IPv4' || entry.family === 4
-      if (ipv4 && !entry.internal) return entry.address
+      if (ipv4 && !entry.internal) candidates.push(entry.address)
     }
   }
-  return '127.0.0.1'
+  // Boatnet talks to the M510 on 192.168.2.0/24; prefer that over the LAN
+  // primary (192.168.3.x) so Icom src IP matches the UDP path (m510-remote style).
+  const radioLan = candidates.find((ip) => ip.startsWith('192.168.2.'))
+  if (radioLan) return radioLan
+  return candidates[0] || '127.0.0.1'
 }
 
 function isAudioFrame (data, isBinary) {

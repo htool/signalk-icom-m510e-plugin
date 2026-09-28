@@ -155,6 +155,17 @@ function encodeAskChannel (srcIp, dstIp) {
   })
 }
 
+/** Empty status ask — RS-M500 / m510-remote send this with the channel ask. */
+function encodeQueryStatus (srcIp, dstIp) {
+  return encodeFrame({
+    srcIp,
+    dstIp,
+    marker: Marker.SET_CHANNEL,
+    command: Command.STATUS,
+    body: Buffer.alloc(0),
+  })
+}
+
 function encodeSetChannel (srcIp, dstIp, index) {
   return encodeOperation(srcIp, dstIp, OperationKey.CH, index)
 }
@@ -207,8 +218,27 @@ function encodeOperation (srcIp, dstIp, key, option) {
   })
 }
 
+// SQL write is a STATUS-shaped frame (old client.js / original plugin), not a
+// phone OperationKey.SQL. CH/PTT/power use encodeOperation; live M510 ignores
+// SQL operate while accepting the status-form write with the current index.
 function encodeSquelch (srcIp, dstIp, index, level) {
-  return encodeOperation(srcIp, dstIp, OperationKey.SQL, level)
+  const body = Buffer.alloc(16)
+  body[0] = 0x02
+  body[1] = 0x03
+  body.writeUInt16LE(index, 2)
+  body.writeUInt16LE(0x0030, 4)
+  body.writeUInt16LE(index, 6)
+  body[8] = 0x02
+  body[9] = 0x05
+  body[10] = Math.max(0, Math.min(10, level))
+  body[12] = 0x07
+  return encodeFrame({
+    srcIp,
+    dstIp,
+    marker: Marker.PLAIN,
+    command: Command.STATUS,
+    body,
+  })
 }
 
 // The radio announces a favourite in a 46-byte frame: channel index at byte 28,
@@ -606,6 +636,7 @@ module.exports = {
   encodeSignIn,
   encodeChannelTableRequest,
   encodeAskChannel,
+  encodeQueryStatus,
   OperationKey,
   encodeSetChannel,
   encodeOperation,

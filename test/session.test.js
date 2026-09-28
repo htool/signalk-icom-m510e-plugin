@@ -20,13 +20,19 @@ function fakeUdp () {
           return socket
         },
         bind (port, callback) {
-          const done = typeof port === 'function' ? port : callback
-          socket.port = typeof port === 'number' && port ? port : nextPort
-          if (!(typeof port === 'number' && port)) nextPort += 1
+          const done = typeof port === 'function' ? port : (typeof callback === 'function' ? callback : () => {})
+          if (port && typeof port === 'object') {
+            socket.port = port.port || nextPort
+            socket.bindAddress = port.address
+            if (!port.port) nextPort += 1
+          } else {
+            socket.port = typeof port === 'number' && port ? port : nextPort
+            if (!(typeof port === 'number' && port)) nextPort += 1
+          }
           done()
         },
         address () {
-          return { port: socket.port, address: '0.0.0.0' }
+          return { port: socket.port, address: socket.bindAddress || '0.0.0.0' }
         },
         setBroadcast () {},
         send (msg, offset, length, port, address, callback) {
@@ -409,6 +415,69 @@ test('absolute setChannel clears a leftover seek so status 16 does not step away
     squelch: 3,
   }), { address: '192.168.1.146', port: 50003 })
   assert.equal(radio.getState().channel.nr, 31)
+  radio.stop()
+})
+
+test('setSquelch holds until status confirms', () => {
+  const udp = fakeUdp()
+  const radio = session(udp)
+  radio.start()
+  radio.radio.ip = '192.168.1.146'
+  radio.radio.port = 50000
+  radio.radio.squelch = 3
+  radio.channel = { nr: 16, mode: '00', label: '16' }
+  assert.equal(radio.setSquelch(1), true)
+  assert.equal(radio.getState().radio.squelch, 1)
+  assert.ok(radio.pendingSquelch)
+  assert.equal(radio.desiredSquelch, 1)
+  const sqlFrames = udp.sent.filter((s) => {
+    const msg = s.msg
+    return msg.length >= 40 && msg[16] === 0x01 && msg[17] === 0x02 && msg[24] === 0x02 && msg[25] === 0x03
+  })
+  assert.ok(sqlFrames.length >= 1)
+  assert.equal(sqlFrames[0].msg[34], 1)
+  const before = udp.sent.length
+  radio.inject('control', protocol.encodeStatus('192.168.1.146', '192.168.1.25', protocol.channelIndex(16, '00'), {
+    busy: false,
+    squelch: 3,
+  }), { address: '192.168.1.146', port: 50003 })
+  assert.equal(radio.getState().radio.squelch, 1)
+  assert.ok(udp.sent.length > before)
+  radio.inject('control', protocol.encodeStatus('192.168.1.146', '192.168.1.25', protocol.channelIndex(16, '00'), {
+    busy: false,
+    squelch: 1,
+  }), { address: '192.168.1.146', port: 50003 })
+  assert.equal(radio.pendingSquelch, null)
+  assert.equal(radio.getState().radio.squelch, 1)
+  radio.stop()
+})
+
+test('desired squelch survives radio revert after confirm (scan hops)', () => {
+  const udp = fakeUdp()
+  const radio = session(udp)
+  radio.start()
+  radio.radio.ip = '192.168.1.146'
+  radio.radio.port = 50000
+  radio.channel = { nr: 16, mode: '00', label: '16' }
+  assert.equal(radio.setSquelch(1), true)
+  radio.inject('control', protocol.encodeStatus('192.168.1.146', '192.168.1.25', protocol.channelIndex(16, '00'), {
+    busy: false,
+    squelch: 1,
+  }), { address: '192.168.1.146', port: 50003 })
+  assert.equal(radio.pendingSquelch, null)
+  assert.equal(radio.desiredSquelch, 1)
+  const before = udp.sent.length
+  radio.inject('control', protocol.encodeStatus('192.168.1.146', '192.168.1.25', protocol.channelIndex(31, '00'), {
+    busy: false,
+    squelch: 3,
+  }), { address: '192.168.1.146', port: 50003 })
+  assert.equal(radio.getState().radio.squelch, 1)
+  assert.ok(udp.sent.length > before)
+  const resent = udp.sent.slice(before).some((s) => {
+    const msg = s.msg
+    return msg.length >= 40 && msg[16] === 0x01 && msg[17] === 0x02 && msg[24] === 0x02 && msg[25] === 0x03 && msg[34] === 1
+  })
+  assert.equal(resent, true)
   radio.stop()
 })
 

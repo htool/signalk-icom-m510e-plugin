@@ -40,8 +40,8 @@ function render () {
   $('name').textContent = state.name || ''
   $('power').textContent = state.watt == null ? '1W' : `${state.watt}W`
   $('bank').textContent = bankLabel()
-  $('fav').textContent = state.fav ? '★' : '☆'
   $('fav').classList.toggle('on', state.fav)
+  $('fav').setAttribute('aria-pressed', state.fav ? 'true' : 'false')
   const online = state.status === 'online'
   const following = online && !controlling
   const statusText = authNote || (online ? '' : (state.status || 'offline'))
@@ -59,7 +59,8 @@ function render () {
   $('scan-fav').classList.toggle('on', state.scanMode === 'favourites')
   const current = Number(state.nr)
   const markedNow = state.marked.indexOf(current) >= 0
-  if ($('mark').checked !== markedNow) $('mark').checked = markedNow
+  $('mark').classList.toggle('on', markedNow)
+  $('mark').setAttribute('aria-pressed', markedNow ? 'true' : 'false')
   $('marked').textContent = state.marked.length ? `Marked: ${state.marked.join(', ')}` : 'Marked: none'
   if (!draggingSql) {
     $('sql').value = state.squelch
@@ -384,7 +385,7 @@ function chooseScan (mode) {
 $('scan-all').addEventListener('click', () => chooseScan('all'))
 $('scan-marked').addEventListener('click', () => chooseScan('marked'))
 $('scan-fav').addEventListener('click', () => chooseScan('favourites'))
-$('mark').addEventListener('change', () => {
+$('mark').addEventListener('click', () => {
   if (handsOff()) return
   const nr = Number(state.nr)
   const previous = state.marked.slice()
@@ -421,7 +422,7 @@ function commitSquelch (level) {
   const n = Math.max(0, Math.min(10, Math.round(Number(level))))
   expectSquelch = n
   clearTimeout(expectSquelchTimer)
-  expectSquelchTimer = setTimeout(() => { expectSquelch = null }, 1500)
+  expectSquelchTimer = setTimeout(() => { expectSquelch = null }, 5000)
   state.squelch = n
   render()
   put('communication.vhf.squelch', n).catch(() => {})

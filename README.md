@@ -2,7 +2,11 @@
 
 Signal K plugin for an Icom M510E over the radio's WLAN, using the same UDP session as the RS-M500 handset. It publishes the radio state, accepts channel and control commands, and serves a web remote.
 
-![RS-M500 style web remote](screenshot.png)
+NMEA 0183 from the radio is parsed into Signal K. Sentences on the `nmea0183out` event (for example from `@signalk/signalk-to-nmea0183` and `signalk-n2kais-to-nmea0183`) are forwarded to the radio so AIS targets can show on the M510 display. That replaces the old `signalk-ct-m500-plugin` for this boat; leaving CT-M500 enabled alongside this plugin blocks squelch changes.
+
+| Radio | Intercom |
+| --- | --- |
+| ![Radio tab](screenshot-radio.png) | ![Intercom tab](screenshot-intercom.png) |
 
 ## Webapp
 
@@ -14,15 +18,15 @@ With the plugin installed, Signal K serves the remote at `/signalk-icom-m510e-pl
 - Favourite and a marked-channel tick. Marked channels and favourite overrides are stored in the plugin data directory.
 - Scan, Scan marked, and Scan favourites. A scan pauses on a busy channel and resumes after the configured silence time. The channel steps stay on the channel the radio reports, so a slow status does not skip ahead.
 - Auto follow of the nearest VHF station.
-- Push-to-talk, and an intercom tab for a call with the radio.
-- Received audio on every open webapp, each with its own rewind buffer and 10-second jumps. The time label includes the channel number that was on the radio when that audio arrived.
+- Push-to-talk on the Radio tab, and a separate Intercom tab for a call with the radio (see [Intercom](#intercom)).
+- Received audio on every open webapp, each with its own cursor into a shared rewind buffer (see [Audio buffer](#audio-buffer)).
 
 ## Webapp states
 
 - **Disconnected.** The radio is offline. The buttons do not drive it.
 - If the radio stops answering for two minutes while Initializing or online, the plugin rediscovers and signs in again.
-- **Connected.** This webapp has the buttons and push-to-talk, and it hears the audio.
-- **Following.** Another webapp has the buttons and push-to-talk. This one still hears the audio and can rewind its own buffer. Take over moves the buttons and push-to-talk here and releases the other webapp's push-to-talk. Scan and auto follow keep running; they belong to the radio.
+- **Connected.** This webapp has the buttons and push-to-talk / intercom, and it hears the audio.
+- **Following.** Another webapp has the buttons and talk keys. This one still hears the audio and can rewind its own buffer. Take over moves the buttons and talk keys here and releases the other webapp's talk. Scan and auto follow keep running; they belong to the radio.
 - **Locked.** This phone's buttons are blocked so they are not pressed by accident. The screen stays awake either way. Other webapps are unchanged.
 
 Opening a second webapp does not take the buttons. Take over does.
@@ -30,6 +34,64 @@ Opening a second webapp does not take the buttons. Take over does.
 - Saving the plugin config keeps the existing UDP session with the radio.
 
 There is no DSC remote.
+
+## Audio buffer
+
+Received radio audio is kept in the plugin so every open webapp can listen live or rewind without holding its own full recording.
+
+```
+M510 RTP (μ-law, UDP 50001)
+        │
+        ▼
+  plugin decode → PCM 8 kHz
+        │
+        ▼
+  shared ring buffer  (length = config “Audio buffer length in minutes”, default 5)
+        │  · stores PCM samples
+        │  · marks the channel number whenever it changes
+        │
+        ├──► webapp A cursor (live or seeked)
+        ├──► webapp B cursor
+        └──► …
+```
+
+**What you see on the Radio tab**
+
+- The scrubber label is `Channel N · XmYYs / XmYYs`: position in the buffer, total buffered length, and the channel that was active when that audio was recorded (so a rewind across a scan still shows which channel you are hearing).
+- The −10 / +10 buttons jump ten seconds. Dragging the scrubber seeks; when you release near the end, playback catches up to live again.
+- Mute only stops local playback. The buffer keeps filling.
+
+**How it works**
+
+1. The plugin receives RTP voice from the radio, converts μ-law to 16-bit PCM, and appends it to one ring buffer (`audio-buffer.js`). When the active channel changes, a mark is stored at that sample so the UI can label rewind by channel.
+2. Each webapp opens a WebSocket at `/plugins/signalk-icom-m510e-plugin/audio`. It gets its own cursor into the same buffer. Live clients stay near the write head; a seek moves the cursor and plays from there until it catches up.
+3. About five times a second the plugin sends a short status JSON (`duration`, `at`, `channel`, `marks`) so the scrubber and channel label stay in sync without shipping the whole buffer.
+4. Only the **operator** webapp (Connected / Take over) may send microphone PCM upward for PTT or intercom. Followers still receive downlink audio and can rewind.
+
+`communication.vhf.audio` is the IP of the operator webapp (or empty). It is not the buffer itself.
+
+## Intercom
+
+The Intercom tab is a private link between the phone and the radio’s built-in intercom — not a VHF transmission. It uses the same WebSocket and microphone path as PTT, but a different control command on the radio.
+
+| | **Radio PTT** | **Intercom** |
+| --- | --- | --- |
+| Tab | RADIO | INTERCOM |
+| Hold | Large mic button | Large headset button |
+| Radio effect | Keys the transmitter (`OperationKey.PTT`) | Starts / ends an intercom call (`IntercomCommand.BEGIN_TALK` / `END`) |
+| Air | On the current VHF channel | No RF — talk with someone at the radio |
+| Side effects | Stops a running scan | Does not stop scan by itself |
+
+**Operator only.** Like PTT, intercom only works while this webapp is Connected (or after Take over). A Following client can hear downlink audio but cannot open the call.
+
+**Hold to talk**
+
+1. Pointer down on the intercom button → webapp sends `{ op: "talk", mode: "intercom", down: true }` on the audio WebSocket and starts capturing the mic (8 kHz PCM chunks).
+2. The plugin (operator socket only) calls `beginTalk('intercom')`, which sends the Icom intercom BEGIN_TALK frame on the control port.
+3. Mic PCM is converted to μ-law RTP and sent to the radio on UDP 50001, same voice path as PTT.
+4. Pointer up → `{ down: false }` → `endTalk()` → intercom END frame; mic capture stops.
+
+The status line shows **Not in a call** or **In a call** from `communication.vhf.intercom` (the radio’s intercom flag in status frames). The button lights while held.
 
 ## Channel list, marked, and favourites
 
@@ -135,13 +197,13 @@ communication.vhf.ip            string    Radio IP, while a session exists
                  .channelGroup  string    USA, INT, CAN, DSC, ATIS, WX, or empty
                  .silence       number    Seconds since the channel went quiet
                  .channel       object    Active channel, see below
-                 .audio         string    IP of the client that has the audio, or empty
+                 .audio         string    IP of the operator webapp (Connected / Take over), or empty
                  .marked        number[]  Channel numbers ticked in the webapp
                  .scanMode      string    all, marked, favourites, follow, or empty
                  .autofollow    boolean   Auto follow is on
 ```
 
-`communication.vhf.bank` is written as an empty string so an older value does not linger. Channel group lives on `channelGroup`. Marked and favourites are described under [Channel list, marked, and favourites](#channel-list-marked-and-favourites); scan and auto-follow behaviour under [Scan and auto-follow](#scan-and-auto-follow).
+`communication.vhf.bank` is written as an empty string so an older value does not linger. Channel group lives on `channelGroup`. Marked and favourites are described under [Channel list, marked, and favourites](#channel-list-marked-and-favourites); scan and auto-follow under [Scan and auto-follow](#scan-and-auto-follow); rewind audio under [Audio buffer](#audio-buffer); talk keys under [Intercom](#intercom).
 
 `communication.vhf.channel` is one object:
 
@@ -200,7 +262,7 @@ With a **single** nearest channel, `scanMode` stays empty (`""`): auto follow on
 | Signal K path of the nearest VHF station | `resources.vhfdata.nearest.0` |
 | Auto follow: seconds of silence before changing channel | 30 |
 | Scan: seconds of silence before resuming | 30 |
-| Audio buffer length in minutes | 5 |
+| Audio buffer length in minutes | 5 (shared ring buffer for live listen + rewind; see [Audio buffer](#audio-buffer)) |
 | Icom M510E IP | empty; discovery is broadcast |
 
 The nearest-station path is a JSON object from the [VHFinfo plugin](https://github.com/htool/vhfinfo). When the IP is set, discovery is sent to that address instead of the broadcast.

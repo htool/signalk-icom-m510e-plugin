@@ -142,7 +142,7 @@ test('discovery, sign-in, table request, ask, squelch, and keepalive match the o
   const squelch = protocol.encodeSquelch(src, radio, 0x5d, 4)
   assert.equal(
     squelch.toString('hex'),
-    '49636f6d01020000' + legacyIp(src) + legacyIp(radio) + '01000000080000000300000002000400'
+    '49636f6d01000000' + legacyIp(src) + legacyIp(radio) + '010200001000000002035d0030005d000205040007000000'
   )
   assert.equal(protocol.encodeKeepAlive().toString('hex'), '800100')
 })

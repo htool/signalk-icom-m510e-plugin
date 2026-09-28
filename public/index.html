@@ -9,7 +9,7 @@
   <link rel="apple-touch-icon" href="icon.png">
   <title>ICOM M510</title>
   <script src="NoSleep.min.js"></script>
-  <link rel="stylesheet" href="app.css?v=20260928scan">
+  <link rel="stylesheet" href="app.css?v=20260928flags">
 </head>
 <body>
   <main class="phone">
@@ -38,11 +38,11 @@
       <div class="readout">
         <div class="meta">
           <button id="power" class="power" type="button" aria-label="Hi/Lo">1W</button>
-          <span class="flags">
-            <button id="fav" class="star" type="button" aria-label="Favourite">☆</button>
-            <input id="mark" type="checkbox" aria-label="Marked">
-          </span>
           <span id="bank"></span>
+        </div>
+        <div class="flags">
+          <button id="fav" class="flag" type="button" aria-pressed="false">Fav</button>
+          <button id="mark" class="flag" type="button" aria-pressed="false">Mark</button>
         </div>
         <div class="channel-row">
           <button id="ch-down" class="step" type="button" aria-label="Channel down">−</button>
