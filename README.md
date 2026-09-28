@@ -4,9 +4,9 @@ Signal K plugin for an Icom M510E over the radio's WLAN, using the same UDP sess
 
 NMEA 0183 from the radio is parsed into Signal K. Sentences on the `nmea0183out` event (for example from `@signalk/signalk-to-nmea0183` and `signalk-n2kais-to-nmea0183`) are forwarded to the radio so AIS targets can show on the M510 display. That replaces the old `signalk-ct-m500-plugin` for this boat; leaving CT-M500 enabled alongside this plugin blocks squelch changes.
 
-| Radio | Intercom |
-| --- | --- |
-| ![Radio tab](screenshot-radio.png) | ![Intercom tab](screenshot-intercom.png) |
+![Radio tab with squelch and audio buffer](screenshot-radio.png)
+
+![Intercom tab](screenshot-intercom.png)
 
 ## Webapp
 
