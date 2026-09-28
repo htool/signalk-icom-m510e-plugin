@@ -90,14 +90,30 @@ body {
 .hidden { display: none; }
 .readout { text-align: center; background: #fff; margin: 0 -16px; padding: 8px 12px 10px; border-bottom: 1px solid var(--line); flex: 0 0 auto; }
 .meta { display: flex; justify-content: center; align-items: center; gap: 22px; font-size: 22px; font-weight: 600; }
-.flags { display: inline-flex; align-items: center; gap: 8px; }
+.flags {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin: 8px 0 2px;
+}
+.flag {
+  min-height: 44px;
+  border: 1px solid #c8c8c8;
+  border-radius: 10px;
+  background: #fff;
+  color: #111;
+  font-size: 16px;
+  font-weight: 700;
+}
+.flag.on {
+  background: var(--orange);
+  border-color: var(--orange);
+  color: #1a1204;
+}
 .power {
   width: 3.4em; padding: 0; border: 0; background: transparent; color: inherit;
   font: inherit; font-weight: 600; text-align: center; font-variant-numeric: tabular-nums;
 }
-.star { border: 0; background: transparent; color: inherit; padding: 0; font-size: 40px; line-height: 1; font-weight: 400; }
-.star.on { color: var(--orange); }
-.flags input { width: 22px; height: 22px; margin: 0; }
 .channel-row {
   display: grid;
   grid-template-columns: 56px 1fr 56px;
@@ -192,5 +208,5 @@ button { font-weight: 700; }
 .ptt.busy { box-shadow: inset 0 0 0 8px #e10600; }
 .phone.locked .ptt, .phone.locked .tab, .phone.locked .step, .phone.locked .tools button, .phone.locked .sql-row, .phone.locked .live-row,
 .phone.following .ptt, .phone.following .tab, .phone.following .step, .phone.following .tools button, .phone.following .sql-row,
-.phone.following .power, .phone.following .star, .phone.following #mark { pointer-events: none; opacity: .55; }
+.phone.following .power, .phone.following .flag { pointer-events: none; opacity: .55; }
 .phone.locked .lock, .phone.following .lock, .phone.following .take { pointer-events: auto; opacity: 1; }

@@ -1,3 +1,4 @@
+const os = require('os')
 const protocol = require('./protocol')
 
 const ROLES = ['discovery', 'keepalive', 'control', 'data', 'extra', 'voice']
@@ -12,6 +13,31 @@ function every (fn, ms) {
   const timer = setInterval(fn, ms)
   if (timer.unref) timer.unref()
   return timer
+}
+
+/** Same idea as m510-remote: localIp must be the address on the path to the radio. */
+function pickLocalIpv4 (nearIp) {
+  const candidates = []
+  for (const entries of Object.values(os.networkInterfaces())) {
+    for (const entry of entries || []) {
+      const ipv4 = entry.family === 'IPv4' || entry.family === 4
+      if (ipv4 && !entry.internal) candidates.push(entry.address)
+    }
+  }
+  if (nearIp) {
+    const same = candidates.find((ip) => sameSubnet24(ip, nearIp))
+    if (same) return same
+  }
+  const radioLan = candidates.find((ip) => ip.startsWith('192.168.2.'))
+  if (radioLan) return radioLan
+  return candidates[0] || null
+}
+
+function sameSubnet24 (a, b) {
+  const pa = a.split('.').map(Number)
+  const pb = b.split('.').map(Number)
+  if (pa.length !== 4 || pb.length !== 4) return false
+  return pa[0] === pb[0] && pa[1] === pb[1] && pa[2] === pb[2]
 }
 
 class RadioSession {
@@ -58,6 +84,11 @@ class RadioSession {
     this.scanSkipUntil = 0
     this.favOverride = Object.create(null)
     this.pending = null
+    this.pendingSquelch = null
+    // Last user-requested SQL. Marked/fav scan channel hops make the radio
+    // report the old level again after a brief confirm; keep asserting until
+    // status matches (and re-push after each setChannel while set).
+    this.desiredSquelch = null
     this.radio = {
       ip: null,
       port: null,
@@ -77,6 +108,15 @@ class RadioSession {
     this.closed = false
     const savedPorts = resume && resume.ports
     const savedRadio = resume && resume.radio
+    // Prefer a local address on the radio subnet so the Icom src IP matches the
+    // UDP path (boatnet: 192.168.2.1 → 192.168.2.18). m510-remote passes this
+    // explicitly; guessing the first NIC (often 192.168.3.x) breaks SQL writes.
+    if (savedRadio && savedRadio.ip) {
+      const better = pickLocalIpv4(savedRadio.ip)
+      if (better) this.localIp = better
+    } else if (!this.localIp || this.localIp === '127.0.0.1') {
+      this.localIp = pickLocalIpv4(null) || this.localIp
+    }
     let pending = ROLES.length
     for (const role of ROLES) {
       const socket = this.udp.createSocket('udp4')
@@ -84,6 +124,8 @@ class RadioSession {
       socket.on('error', (err) => this.debug(`${role} socket error: ${err.message}`))
       socket.on('message', (msg, rinfo) => this.handleIncoming(role, msg, rinfo))
       const port = savedPorts && savedPorts[role] ? savedPorts[role] : 0
+      // Bind 0.0.0.0 so replies arrive on every boatnet address; Icom frames still
+      // carry localIp on the radio subnet (see pickLocalIpv4 / index localIpv4).
       socket.bind(port, () => {
         if (this.closed) return
         if (role === 'discovery') socket.setBroadcast(true)
@@ -193,6 +235,9 @@ class RadioSession {
       }
     }
     this.channel = this.channelFrom(part.nr, part.mode, entry || {})
+    // Scan hops make the M510 forget a STATUS-form SQL write; push again on the
+    // new channel while the user still wants that level.
+    if (this.desiredSquelch != null) this.reassertSquelch()
     this.onUpdate(this.snapshot())
     return true
   }
@@ -303,10 +348,63 @@ class RadioSession {
 
   setSquelch (level) {
     const n = Math.max(0, Math.min(10, Math.round(Number(level))))
-    if (!Number.isFinite(n) || !this.operate(protocol.OperationKey.SQL, n)) return false
+    if (!Number.isFinite(n) || !this.radio.ip || !this.sockets.control) return false
+    const index = this.channel
+      ? protocol.channelIndex(this.channel.nr, this.channel.mode || '00')
+      : null
+    if (index == null) return false
+    this.desiredSquelch = n
+    this.pushSquelch(index, n)
+    this.askStatus()
+    this.pendingSquelch = {
+      level: n,
+      until: Date.now() + 60000,
+      lastSent: Date.now(),
+      resent: false,
+      index,
+    }
     this.radio.squelch = n
     this.onUpdate(this.snapshot())
     return true
+  }
+
+  pushSquelch (index, level) {
+    if (!this.radio.ip || !this.sockets.control || index == null) return false
+    // STATUS-shaped write (client.js / original plugin). OperationKey.SQL reaches
+    // the radio but does not change the level; set-channel operate still works.
+    const frame = protocol.encodeSquelch(this.localIp, this.radio.ip, index, level)
+    this.send(this.sockets.control, frame, protocol.PORT.CONTROL, this.radio.ip)
+    return true
+  }
+
+  /** Re-assert desired SQL using the current channel index (after scan hops). */
+  reassertSquelch () {
+    if (this.desiredSquelch == null || !this.radio.ip || !this.channel) return false
+    const index = protocol.channelIndex(this.channel.nr, this.channel.mode || '00')
+    if (index == null) return false
+    if (this.pendingSquelch) {
+      this.pendingSquelch.index = index
+      this.pendingSquelch.lastSent = Date.now()
+      this.pendingSquelch.resent = true
+      this.pendingSquelch.until = Math.max(this.pendingSquelch.until, Date.now() + 15000)
+    } else {
+      this.pendingSquelch = {
+        level: this.desiredSquelch,
+        until: Date.now() + 15000,
+        lastSent: Date.now(),
+        resent: true,
+        index,
+      }
+    }
+    return this.pushSquelch(index, this.desiredSquelch)
+  }
+
+  askStatus () {
+    if (!this.radio.ip || !this.sockets.control) return
+    const ask = protocol.encodeAskChannel(this.localIp, this.radio.ip)
+    const status = protocol.encodeQueryStatus(this.localIp, this.radio.ip)
+    this.send(this.sockets.control, ask, protocol.PORT.CONTROL, this.radio.ip)
+    this.send(this.sockets.control, status, protocol.PORT.CONTROL, this.radio.ip)
   }
 
   togglePower () {
@@ -342,6 +440,27 @@ class RadioSession {
 
   setPtt (down) {
     return this.operate(protocol.OperationKey.PTT, down ? 1 : 0)
+  }
+
+  /**
+   * Forward an NMEA 0183 sentence to the radio (AIS targets on the M510 display).
+   * Framing matches the old CT-M500 plugin send path on UDP 50004.
+   */
+  sendNmea (sentence) {
+    if (!this.radio.ip || !this.sockets.data) return false
+    const text = String(sentence || '').trim()
+    if (!text || /aN/.test(text)) return false
+    const nmea = Buffer.from(text, 'utf8')
+    const length = nmea.length + 2
+    const header = Buffer.from([
+      0x49, 0x63, 0x6f, 0x6d, 0x01, 0x00, 0x00, 0x00,
+      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+      0x00, 0x01, 0x00, 0x00, length & 0xff, 0x00, 0x00, 0x00,
+      0x01, length & 0xff, 0x02,
+    ])
+    const frame = Buffer.concat([header, nmea, Buffer.from([0x0d, 0x0a])])
+    this.send(this.sockets.data, frame, protocol.PORT.NMEA, this.radio.ip)
+    return true
   }
 
   pressPtt () {
@@ -451,6 +570,11 @@ class RadioSession {
     this.clearTimer('discover')
     this.radio.ip = rinfo.address
     this.radio.port = rinfo.port
+    const better = pickLocalIpv4(rinfo.address)
+    if (better && better !== this.localIp) {
+      this.debug(`localIp ${this.localIp} → ${better} for radio ${rinfo.address}`)
+      this.localIp = better
+    }
     this.radio.status = 'Initializing RS-M500'
     this.initializingSince = Date.now()
     this.lastHeard = Date.now()
@@ -493,8 +617,8 @@ class RadioSession {
     }, this.tablePart2Ms)
     this.timers.askChannel = later(() => {
       if (this.closed || !this.radio.ip) return
-      const ask = protocol.encodeAskChannel(this.localIp, this.radio.ip)
-      this.send(this.sockets.control, ask, protocol.PORT.CONTROL, this.radio.ip)
+      // m510-remote: ask channel + empty status query together.
+      this.askStatus()
     }, this.askChannelMs)
   }
 
@@ -502,7 +626,56 @@ class RadioSession {
     const part = protocol.splitIndex(status.index)
     const entry = this.entry(part.nr, part.mode)
     const wasBusy = this.radio.busy
-    this.radio.squelch = status.squelch
+    if (this.desiredSquelch != null) {
+      const want = this.desiredSquelch
+      if (status.squelch === want) {
+        this.pendingSquelch = null
+        this.radio.squelch = want
+      } else {
+        const now = Date.now()
+        if (!this.pendingSquelch || this.pendingSquelch.level !== want) {
+          this.pendingSquelch = {
+            level: want,
+            until: now + 60000,
+            lastSent: 0,
+            resent: false,
+            index: this.channel
+              ? protocol.channelIndex(this.channel.nr, this.channel.mode || '00')
+              : null,
+          }
+        }
+        if (!this.pendingSquelch.resent || now - this.pendingSquelch.lastSent >= 500) {
+          this.pendingSquelch.resent = true
+          this.pendingSquelch.lastSent = now
+          const index = this.channel
+            ? protocol.channelIndex(this.channel.nr, this.channel.mode || '00')
+            : this.pendingSquelch.index
+          this.pushSquelch(index, want)
+        }
+        this.radio.squelch = want
+      }
+    } else if (this.pendingSquelch) {
+      if (status.squelch === this.pendingSquelch.level) {
+        this.pendingSquelch = null
+        this.radio.squelch = status.squelch
+      } else if (Date.now() < this.pendingSquelch.until) {
+        if (this.radio.ip && (!this.pendingSquelch.resent || Date.now() - this.pendingSquelch.lastSent >= 500)) {
+          this.pendingSquelch.resent = true
+          this.pendingSquelch.lastSent = Date.now()
+          const index = this.pendingSquelch.index != null
+            ? this.pendingSquelch.index
+            : (this.channel ? protocol.channelIndex(this.channel.nr, this.channel.mode || '00') : null)
+          this.pushSquelch(index, this.pendingSquelch.level)
+        }
+        this.radio.squelch = this.pendingSquelch.level
+      } else {
+        this.debug(`squelch ${this.pendingSquelch.level} not confirmed, radio still ${status.squelch}`)
+        this.pendingSquelch = null
+        this.radio.squelch = status.squelch
+      }
+    } else {
+      this.radio.squelch = status.squelch
+    }
     this.radio.busy = status.busy
     this.radio.scanning = status.scanning === true
     this.radio.dualwatch = status.dualwatch === true
