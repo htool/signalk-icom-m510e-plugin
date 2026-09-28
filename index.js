@@ -277,7 +277,7 @@ module.exports = function (app) {
   function subscribe () {
     app.subscriptionmanager.subscribe(
       {
-        context: '*',
+        context: 'vessels.self',
         subscribe: [
           { path: followPath(), period: 1000 },
           { path: autoFollowPath() },
@@ -310,6 +310,9 @@ module.exports = function (app) {
 
   function maybeFollow (state, options = {}) {
     if (!session) return
+    // Always re-read the live path; subscription deltas alone can lag or
+    // miss the current nearest station after a restart / toggle.
+    desiredChannels = readFollowChannels()
     const userScan = session.scanMode === 'marked' || session.scanMode === 'favourites' || session.scanMode === 'all'
     session.followList = desiredChannels
     session.includeFollow = autoFollow && desiredChannels.length > 0 && userScan
@@ -328,6 +331,9 @@ module.exports = function (app) {
     if (state.channel) {
       const current = parseChannelCommand(state.channel.label)
       if (current && current.index === wanted.index) return
+    }
+    if (session.pending && session.pending.index === wanted.index && Date.now() < session.pending.until) {
+      return
     }
     if (!options.immediate) {
       if (!state.quietSince || (Date.now() - state.quietSince) / 1000 <= silenceSeconds()) return

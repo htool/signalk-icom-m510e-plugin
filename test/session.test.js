@@ -349,9 +349,66 @@ test('a slow status during scan does not skip extra channels', async () => {
     squelch: 3,
   }), { address: '192.168.1.146', port: 50003 })
   assert.equal(radio.seek, null)
-  assert.equal(radio.getState().channel.nr, 16)
-  assert.equal(udp.sent.length, before)
+  // Stale status for the previous channel must not snap the display back.
+  assert.equal(radio.getState().channel.nr, 17)
+  assert.ok(udp.sent.length > before)
   radio.stopScan()
+  radio.stop()
+})
+
+test('absolute setChannel ignores stale status until confirmed', () => {
+  const udp = fakeUdp()
+  const radio = session(udp)
+  radio.start()
+  radio.radio.ip = '192.168.1.146'
+  radio.radio.port = 50000
+  radio.ensure(16, '00').enabled = true
+  radio.ensure(31, '00').enabled = true
+  radio.channel = { nr: 16, mode: '00', label: '16' }
+  const target = protocol.channelIndex(31, '00')
+  assert.equal(radio.setChannel(target, { force: true }), true)
+  assert.equal(radio.getState().channel.nr, 31)
+  assert.ok(radio.pending)
+  const before = udp.sent.length
+  radio.inject('control', protocol.encodeStatus('192.168.1.146', '192.168.1.25', protocol.channelIndex(16, '00'), {
+    busy: false,
+    squelch: 3,
+  }), { address: '192.168.1.146', port: 50003 })
+  assert.equal(radio.getState().channel.nr, 31)
+  assert.ok(udp.sent.length > before)
+  radio.inject('control', protocol.encodeStatus('192.168.1.146', '192.168.1.25', target, {
+    busy: false,
+    squelch: 3,
+  }), { address: '192.168.1.146', port: 50003 })
+  assert.equal(radio.pending.confirmed, true)
+  assert.equal(radio.getState().channel.nr, 31)
+  radio.inject('control', protocol.encodeStatus('192.168.1.146', '192.168.1.25', protocol.channelIndex(16, '00'), {
+    busy: false,
+    squelch: 3,
+  }), { address: '192.168.1.146', port: 50003 })
+  assert.equal(radio.getState().channel.nr, 31)
+  assert.equal(radio.pending.index, target)
+  radio.stop()
+})
+
+test('absolute setChannel clears a leftover seek so status 16 does not step away', () => {
+  const udp = fakeUdp()
+  const radio = session(udp)
+  radio.start()
+  radio.radio.ip = '192.168.1.146'
+  radio.radio.port = 50000
+  for (const nr of [16, 17, 31]) radio.ensure(nr, '00').enabled = true
+  radio.channel = { nr: 16, mode: '00', label: '16' }
+  assert.equal(radio.step(1, false), true)
+  assert.ok(radio.seek)
+  const target = protocol.channelIndex(31, '00')
+  assert.equal(radio.setChannel(target, { force: true }), true)
+  assert.equal(radio.seek, null)
+  radio.inject('control', protocol.encodeStatus('192.168.1.146', '192.168.1.25', protocol.channelIndex(16, '00'), {
+    busy: false,
+    squelch: 3,
+  }), { address: '192.168.1.146', port: 50003 })
+  assert.equal(radio.getState().channel.nr, 31)
   radio.stop()
 })
 

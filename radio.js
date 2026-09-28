@@ -57,6 +57,7 @@ class RadioSession {
     this.scanQuietAt = null
     this.scanSkipUntil = 0
     this.favOverride = Object.create(null)
+    this.pending = null
     this.radio = {
       ip: null,
       port: null,
@@ -176,6 +177,20 @@ class RadioSession {
       const origin = this.seek && this.seek.origin != null ? this.seek.origin : previous
       const hops = this.seek && this.seek.origin != null ? this.seek.hops + 1 : 0
       this.seek = { index, previous, origin, direction: options.direction, hops, until: Date.now() + 800 }
+      this.pending = null
+    } else {
+      // Absolute sets (auto-follow, scan, keypad) must not keep a leftover
+      // +/- seek, or a stale status on the old channel re-triggers step().
+      // Hold long enough that late status packets for the previous channel
+      // (often 16) cannot snap the radio display back after a real confirm.
+      this.seek = null
+      this.pending = {
+        index,
+        until: Date.now() + 5000,
+        lastSent: Date.now(),
+        confirmed: false,
+        resent: false,
+      }
     }
     this.channel = this.channelFrom(part.nr, part.mode, entry || {})
     this.onUpdate(this.snapshot())
@@ -508,6 +523,33 @@ class RadioSession {
       this.refused.add(this.seek.index)
       this.step(direction, false)
       return
+    }
+    if (this.pending) {
+      if (status.index === this.pending.index) {
+        this.pending.confirmed = true
+        this.pending.until = Math.max(this.pending.until, Date.now() + 4000)
+      } else if (Date.now() < this.pending.until) {
+        // Conflicting status: either still switching, or a late packet for the
+        // previous channel after we already saw the target. Keep the target
+        // and re-send the set so the radio does not stick on e.g. 16.
+        if (this.radio.ip && (!this.pending.resent || Date.now() - this.pending.lastSent >= 500)) {
+          this.pending.resent = true
+          this.pending.lastSent = Date.now()
+          const frame = protocol.encodeSetChannel(this.localIp, this.radio.ip, this.pending.index)
+          this.send(this.sockets.control, frame, protocol.PORT.CONTROL, this.radio.ip)
+        }
+        const want = protocol.splitIndex(this.pending.index)
+        const held = this.entry(want.nr, want.mode) || {}
+        this.channel = this.channelFrom(want.nr, want.mode, held)
+        this.channel.busy = status.busy === true
+        this.onUpdate(this.snapshot())
+        return
+      } else {
+        // Gave up holding. Allow auto-follow to retry without waiting a full
+        // silence window (setChannel had reset quietSince).
+        this.pending = null
+        this.quietSince = Date.now() - 120000
+      }
     }
     const watt = status.watt == null ? entry && entry.watt : status.watt
     const hilo = status.hilo == null ? entry && entry.hilo : status.hilo
