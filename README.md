@@ -31,6 +31,94 @@ Opening a second webapp does not take the buttons. Take over does.
 
 There is no DSC remote.
 
+## Channel list, marked, and favourites
+
+The plugin keeps one in-memory channel book per session. It is filled from the radio after sign-in, then layered with plugin-local lists.
+
+```
+Radio (names + properties)     Plugin data directory
+┌────────────────────────┐     ┌─────────────────────────┐
+│ nr + mode (00/10/20)   │     │ marked.json             │
+│ name                   │     │   → communication.vhf   │
+│ enabled / inhibited    │     │     .marked             │
+│ duplex, watt           │     │ favourites.json         │
+│ fav bit from radio     │──┐  │   → favOverride map     │
+└────────────────────────┘  │  └─────────────────────────┘
+                            ▼
+                   entry.fav = override if set,
+                               else radio fav bit
+```
+
+| Source | What it is | Leading for |
+| --- | --- | --- |
+| Radio names + properties | Full book for the current channel group (USA / INT / CAN / ATIS / …): number, name, enabled, duplex, power, and the radio's own favourite flag | Channel up/down and **Scan** (all enabled channels in the current mode) |
+| `marked.json` → `communication.vhf.marked` | Ordered list of channel **numbers** ticked in the webapp. Plugin-only; the radio does not store it | **Scan marked** and the Mark tick. Not the same as favourites |
+| `favourites.json` → `favOverride` | Per-channel-index overrides of the radio favourite flag. Empty means “trust the radio” | **Scan favourites** and the Favourite button. An override wins over the radio bit until cleared |
+| VHFinfo path (default `resources.vhfdata.nearest.0`) | Station JSON / channel string from the [VHFinfo plugin](https://github.com/htool/vhfinfo). Parsed to one or more channel numbers | **Auto follow** only |
+
+Rules of thumb:
+
+- **Marked** is always the plugin list. Marking 16 does not make it a radio favourite.
+- **Favourites** start as the radio's fav bits. The webapp Favourite toggle writes an override; that override is what Scan favourites and the UI star use.
+- Channel up/down stay in the current `mode` bank and skip `enabled: false` entries (except when stepping a marked or follow list).
+- Auto follow never writes marked or favourites; it only tunes (or scans) the channel numbers from the nearest-station path.
+
+## Scan and auto-follow
+
+`communication.vhf.scanMode` is the scan state: empty (idle), `all`, `marked`, `favourites`, or `follow` (internal multi-channel auto follow). Auto follow itself is the separate boolean `communication.vhf.autofollow`.
+
+A user scan (**Scan** / **Scan marked** / **Scan favourites**) always wins over auto follow's own `follow` scan. While a user scan runs with auto follow on, channels from the nearest path are **merged into** that scan (so a marked scan can also stop on the marina channel).
+
+```
+                         ┌──────────────────────────────────────┐
+                         │              IDLE                    │
+                         │  scanMode = ""                       │
+                         │  +/− / keypad set the channel        │
+                         └───────┬───────────────┬──────────────┘
+                    Auto follow  │               │  Scan /
+                    ON           │               │  Scan marked /
+                                 │               │  Scan favourites
+                                 ▼               ▼
+              ┌─────────────────────────┐   ┌─────────────────────────┐
+              │   AUTO FOLLOW           │   │   USER SCAN             │
+              │   autofollow = true     │   │   scanMode =            │
+              │                         │   │     all | marked |      │
+              │  nearest has 1 channel  │   │     favourites          │
+              │    → after silence*,    │   │                         │
+              │      set that channel  │   │  step +1 on that list   │
+              │                         │   │  pause while busy;      │
+              │  nearest has 2+         │   │  resume after           │
+              │    → scanMode=follow    │   │  scanResume silence     │
+              │      (scan that list)   │   │                         │
+              └───────────┬─────────────┘   │  if autofollow ON:      │
+                          │                 │    also visit nearest   │
+           user starts a  │                 │    channels in the step │
+           Scan* button   │                 └───────────┬─────────────┘
+                          ▼                             │
+              ┌─────────────────────────┐               │
+              │   USER SCAN (same as    │◄──────────────┘
+              │   right) — follow scan  │   same mode again: no-op
+              │   is stopped            │   Scan* off / scanStop:
+              └─────────────────────────┘     → IDLE (autofollow
+                                              may retake follow)
+
+  * silence = plugin config “Auto follow: seconds of silence…”
+    Immediate when autofollow is toggled on.
+  * Pressing the active Scan* button does not toggle off;
+    send scanMode "off" (or scanStop) to stop.
+  * PTT stops any scan and returns to IDLE (autofollow may retake).
+```
+
+Button summary:
+
+| Action | Effect |
+| --- | --- |
+| **Auto follow** on | Read nearest now. One channel → tune (immediate on toggle, else after silence). Several → start `follow` scan. |
+| **Auto follow** off | Stop `follow` scan if it was running. Leave the current channel. |
+| **Scan** / **Scan marked** / **Scan favourites** | Start that user scan. Stops a `follow` scan. Marked needs a non-empty marked list. |
+| Scan mode **off** | Idle. Auto follow may start `follow` again if it is still on and nearest has 2+ channels. |
+| **+1** during a scan | Jump to the next channel of that scan and continue from there. |
+
 ## Signal K
 
 Values are published under `communication.vhf`:
@@ -49,11 +137,11 @@ communication.vhf.ip            string    Radio IP, while a session exists
                  .channel       object    Active channel, see below
                  .audio         string    IP of the client that has the audio, or empty
                  .marked        number[]  Channel numbers ticked in the webapp
-                 .scanMode      string    all, marked, favourites, or empty
+                 .scanMode      string    all, marked, favourites, follow, or empty
                  .autofollow    boolean   Auto follow is on
 ```
 
-`communication.vhf.bank` is written as an empty string so an older value does not linger. Channel group lives on `channelGroup`.
+`communication.vhf.bank` is written as an empty string so an older value does not linger. Channel group lives on `channelGroup`. Marked and favourites are described under [Channel list, marked, and favourites](#channel-list-marked-and-favourites); scan and auto-follow behaviour under [Scan and auto-follow](#scan-and-auto-follow).
 
 `communication.vhf.channel` is one object:
 
@@ -97,10 +185,12 @@ curl -H "Content-Type: application/json" -X PUT \
 | `communication.vhf.intercom` | `true`, `talk`, or `begin` starts; anything else ends |
 | `communication.vhf.autofollow` | `toggle`, or `1` / `true` / `on` |
 | `communication.vhf.marked` | `toggle` for the active channel number |
-| `communication.vhf.scanMode` | `all`, `marked`, `favourites`, or `off` (same mode again is a no-op; only `off` stops) |
+| `communication.vhf.scanMode` | `all`, `marked`, `favourites`, or `off` (same mode again is a no-op; only `off` stops). `follow` is set by auto follow when nearest has several channels |
 | `communication.vhf.fav` | `toggle` |
 
-Auto follow reads the nearest station from the path set in the plugin config (`resources.vhfdata.nearest.0` by default). That value is the JSON object published by the [VHFinfo plugin](https://github.com/htool/vhfinfo). Its `channel` field is used, and a list such as `12/16` tunes the first channel.
+Auto follow reads the nearest station from the path set in the plugin config (`resources.vhfdata.nearest.0` by default). That value is the JSON object published by the [VHFinfo plugin](https://github.com/htool/vhfinfo). Its `channel` field is used; a list such as `12/16` becomes a multi-channel follow scan. See [Scan and auto-follow](#scan-and-auto-follow).
+
+With a **single** nearest channel, `scanMode` stays empty (`""`): auto follow only tunes that channel. Empty `scanMode` does not turn auto follow off — `follow` is only used when nearest lists several channels.
 
 ## Plugin config
 
