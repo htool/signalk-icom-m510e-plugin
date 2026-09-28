@@ -99,9 +99,10 @@ function applyValue (path, value) {
   else if (key === 'busy') return
   else if (key === 'scanning') state.scanning = value === true
   else if (key === 'scanMode') {
-    const mode = value || ''
+    const mode = value === 'off' || value == null ? '' : String(value)
     if (expectScan != null && mode !== expectScan) return
     expectScan = null
+    clearTimeout(expectScanTimer)
     state.scanMode = mode
   }
   else if (key === 'marked') {
@@ -263,14 +264,18 @@ async function loadRest () {
 
 function subscribe () {
   const url = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/signalk/v1/stream?subscribe=none`
+  if (stream && (stream.readyState === WebSocket.OPEN || stream.readyState === WebSocket.CONNECTING)) return
   const socket = new WebSocket(url)
+  stream = socket
   socket.addEventListener('open', () => {
+    if (stream !== socket) return
     socket.send(JSON.stringify({
       context: 'vessels.self',
       subscribe: [{ path: 'communication.vhf.*', period: 500 }],
     }))
   })
   socket.addEventListener('message', (event) => {
+    if (stream !== socket) return
     const delta = JSON.parse(event.data)
     ;(delta.updates || []).forEach((update) => {
       ;(update.values || []).forEach((item) => {
@@ -279,7 +284,23 @@ function subscribe () {
     })
     render()
   })
+  socket.addEventListener('close', () => {
+    if (stream === socket) stream = null
+  })
 }
+
+function refreshFromServer () {
+  expectScan = null
+  clearTimeout(expectScanTimer)
+  expectMark = null
+  expectFollow = null
+  expectSquelch = null
+  clearTimeout(expectSquelchTimer)
+  loadRest().catch(() => {})
+  subscribe()
+}
+
+let stream = null
 
 const noSleep = new NoSleep()
 let wakeLockEnabled = false
@@ -348,11 +369,14 @@ function chooseScan (mode) {
   const previous = state.scanMode
   const next = previous === mode ? '' : mode
   expectScan = next
+  clearTimeout(expectScanTimer)
+  expectScanTimer = setTimeout(() => { expectScan = null }, 1500)
   state.scanMode = next
   render()
   put('communication.vhf.scanMode', next || 'off').catch(() => {
     if (expectScan !== next) return
     expectScan = null
+    clearTimeout(expectScanTimer)
     state.scanMode = previous
     render()
   })
@@ -387,6 +411,7 @@ function sameNumbers (left, right) {
 let expectMark = null
 let expectFollow = null
 let expectScan = null
+let expectScanTimer = null
 let expectSquelch = null
 let expectSquelchTimer = null
 let draggingSql = false
@@ -762,8 +787,14 @@ document.querySelector('.phone').addEventListener('pointerdown', () => {
   if (!speaker) startSpeaker(false)
 }, true)
 document.addEventListener('visibilitychange', () => {
-  if (document.hidden || muted || speaker) return
+  if (document.hidden) return
+  refreshFromServer()
+  if (muted || speaker) return
   startSpeaker(false)
+})
+window.addEventListener('pageshow', (event) => {
+  if (event.persisted) refreshFromServer()
+  claimOnLoad()
 })
 $('take').addEventListener('click', () => {
   ensureAudio()
@@ -777,7 +808,6 @@ function claimOnLoad () {
   if (muted) return
   startSpeaker(false)
 }
-window.addEventListener('pageshow', claimOnLoad)
 setMuted(muted)
 claimOnLoad()
 document.addEventListener('gesturestart', (event) => event.preventDefault())
@@ -787,8 +817,7 @@ document.addEventListener('touchmove', (event) => {
 }, { passive: false })
 
 render()
-loadRest().catch(() => {})
-subscribe()
+refreshFromServer()
 if (!deviceToken) {
   const pending = localStorage.getItem(HREF_KEY)
   if (pending) pollAccess(pending).catch(() => requestDeviceAccess())

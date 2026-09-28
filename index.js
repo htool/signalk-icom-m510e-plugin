@@ -243,6 +243,23 @@ module.exports = function (app) {
     return options.followPath || 'resources.vhfdata.nearest.0'
   }
 
+  function pathValue (node) {
+    if (node == null) return undefined
+    if (typeof node !== 'object' || Array.isArray(node)) return node
+    if (Object.prototype.hasOwnProperty.call(node, 'value')) return node.value
+    return node
+  }
+
+  function readFollowChannels () {
+    if (typeof app.getSelfPath !== 'function') return desiredChannels.slice()
+    try {
+      return channelsFromFollowValue(pathValue(app.getSelfPath(followPath())))
+    } catch (err) {
+      app.debug(`follow path read failed: ${err.message}`)
+      return desiredChannels.slice()
+    }
+  }
+
   function silenceSeconds () {
     return Number.isFinite(options.silence) ? options.silence : 30
   }
@@ -291,7 +308,7 @@ module.exports = function (app) {
     if (session) maybeFollow(session.getState())
   }
 
-  function maybeFollow (state) {
+  function maybeFollow (state, options = {}) {
     if (!session) return
     const userScan = session.scanMode === 'marked' || session.scanMode === 'favourites' || session.scanMode === 'all'
     session.followList = desiredChannels
@@ -312,7 +329,9 @@ module.exports = function (app) {
       const current = parseChannelCommand(state.channel.label)
       if (current && current.index === wanted.index) return
     }
-    if (!state.quietSince || (Date.now() - state.quietSince) / 1000 <= silenceSeconds()) return
+    if (!options.immediate) {
+      if (!state.quietSince || (Date.now() - state.quietSince) / 1000 <= silenceSeconds()) return
+    }
     session.setChannel(wanted.index, { force: true })
   }
 
@@ -326,7 +345,7 @@ module.exports = function (app) {
     }
   }
 
-  function publish (state) {
+  function publish (state, options) {
     const values = []
     const base = 'communication.vhf'
     const radio = state.radio
@@ -353,7 +372,7 @@ module.exports = function (app) {
     values.push({ path: base + '.scanMode', value: state.scanMode || '' })
     values.push({ path: base + '.autofollow', value: autoFollow === true })
     app.handleMessage(plugin.id, { updates: [{ values }] })
-    maybeFollow(state)
+    maybeFollow(state, options)
   }
 
   function ensurePut () {
@@ -385,12 +404,18 @@ module.exports = function (app) {
   }
 
   function apiAutoFollow (context, path, value, callback) {
+    const previous = autoFollow
     const text = String(value).toLowerCase()
     if (text === 'toggle') autoFollow = !autoFollow
     else autoFollow = text === '1' || text === 'true' || text === 'on'
+    const turningOn = autoFollow && !previous
+    if (autoFollow) {
+      desiredChannels = readFollowChannels()
+      app.debug(`autoFollow on, channels ${desiredChannels.join(',')}`)
+    }
     const reply = { state: 'COMPLETED', statusCode: 200 }
     callback(reply)
-    if (session) publish(session.getState())
+    if (session) publish(session.getState(), turningOn ? { immediate: true } : undefined)
     return reply
   }
 
@@ -419,10 +444,11 @@ module.exports = function (app) {
     if (!session || session.getState().radio.status !== 'online') return finish(400)
     const mode = String(value)
     if (mode !== 'marked' && mode !== 'favourites' && mode !== 'all' && mode !== 'off') return finish(400)
-    if (mode === 'off' || session.scanMode === mode) {
+    if (mode === 'off') {
       session.stopScan()
       return finish(200)
     }
+    if (session.scanMode === mode) return finish(200)
     if (mode === 'marked' && !marked.length) return finish(400)
     session.marked = marked
     session.scan(mode === 'marked' ? 'marked' : mode === 'favourites')

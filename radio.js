@@ -27,6 +27,8 @@ class RadioSession {
     this.silenceIntervalMs = options.silenceIntervalMs || 1000
     this.namesReadyDelayMs = options.namesReadyDelayMs == null ? 8000 : options.namesReadyDelayMs
     this.heardTimeoutMs = options.heardTimeoutMs || 10000
+    // No radio traffic for this long while Initializing or online → rediscover.
+    this.noResponseTimeoutMs = options.noResponseTimeoutMs == null ? 120000 : options.noResponseTimeoutMs
     this.scanIntervalMs = options.scanIntervalMs || 200
     this.scanResumeSeconds = Number.isFinite(options.scanResumeSeconds) ? options.scanResumeSeconds : 30
     this.discoverAddress = options.discoverAddress || '255.255.255.255'
@@ -44,6 +46,7 @@ class RadioSession {
     this.nameMode = 0
     this.propertyBytes = Buffer.alloc(0)
     this.lastHeard = 0
+    this.initializingSince = null
     this.quietSince = null
     this.keepaliveTarget = null
     this.marked = []
@@ -126,7 +129,9 @@ class RadioSession {
     this.radio.port = saved.port
     this.radio.status = 'Initializing RS-M500'
     this.lastHeard = Date.now()
+    this.initializingSince = Date.now()
     this.resuming = true
+    this.armHealthClock()
     this.sendSignIn()
     this.requestChannelTable()
   }
@@ -432,6 +437,9 @@ class RadioSession {
     this.radio.ip = rinfo.address
     this.radio.port = rinfo.port
     this.radio.status = 'Initializing RS-M500'
+    this.initializingSince = Date.now()
+    this.lastHeard = Date.now()
+    this.armHealthClock()
     this.sendSignIn()
     this.onUpdate(this.snapshot())
     return true
@@ -441,10 +449,9 @@ class RadioSession {
     this.resuming = false
     this.namesComplete = true
     this.radio.status = 'online'
+    this.initializingSince = null
     this.quietSince = this.quietSince || Date.now()
-    if (!this.timers.silence) {
-      this.timers.silence = every(() => this.publishClock(), this.silenceIntervalMs)
-    }
+    this.armHealthClock()
     this.onUpdate(this.snapshot(0))
   }
 
@@ -528,11 +535,9 @@ class RadioSession {
     if (!block.done || this.namesComplete) return
     this.namesComplete = true
     this.radio.status = 'Initializing RS-M500'
+    if (this.initializingSince == null) this.initializingSince = Date.now()
     this.quietSince = Date.now()
-    this.timers.silenceArm = later(() => {
-      this.clearTimer('silence')
-      this.timers.silence = every(() => this.publishClock(), this.silenceIntervalMs)
-    }, this.namesReadyDelayMs)
+    this.armHealthClock()
   }
 
   addName (name) {
@@ -590,10 +595,23 @@ class RadioSession {
 
   publishClock () {
     if (this.closed) return
-    const heardAgo = Date.now() - this.lastHeard
-    if (heardAgo < this.heardTimeoutMs) {
-      if (this.radio.status === 'Initializing RS-M500') {
+    const now = Date.now()
+    const heardAgo = now - this.lastHeard
+    const initializing = this.radio.status === 'Initializing RS-M500'
+    const online = this.radio.status === 'online'
+    if ((initializing || online) && this.lastHeard && heardAgo >= this.noResponseTimeoutMs) {
+      this.debug(`no radio response for ${Math.round(heardAgo / 1000)}s, rediscovering`)
+      this.dropAndRediscover()
+      return
+    }
+    if (initializing && heardAgo < this.heardTimeoutMs) {
+      const since = this.initializingSince || now
+      const waited = now - since
+      const namesReady = this.namesComplete && waited >= this.namesReadyDelayMs
+      const stuckWithStatus = !this.namesComplete && this.channel && waited >= this.namesReadyDelayMs
+      if (namesReady || stuckWithStatus) {
         this.radio.status = 'online'
+        this.initializingSince = null
         if (this.channel) {
           const entry = this.entry(this.channel.nr, this.channel.mode)
           if (entry && entry.name) this.channel.name = entry.name
@@ -601,23 +619,29 @@ class RadioSession {
         this.onUpdate(this.snapshot(0))
         return
       }
-    } else if (this.radio.status === 'online') {
-      this.radio.status = 'offline'
-      this.radio.busy = false
-      this.radio.channelGroup = ''
-      this.channel = null
-      this.resetTable()
-      this.clearTimer('silence')
-      this.clearTimer('keepalive')
-      this.keepaliveTarget = null
-      this.onUpdate(this.snapshot(null))
-      this.startDiscovery()
-      return
     }
-    if (this.radio.status === 'online') {
-      const silence = Math.floor((Date.now() - (this.quietSince || Date.now())) / 1000)
+    if (online) {
+      const silence = Math.floor((now - (this.quietSince || now)) / 1000)
       this.onUpdate(this.snapshot(silence))
     }
+  }
+
+  dropAndRediscover () {
+    this.radio.status = 'offline'
+    this.radio.busy = false
+    this.radio.channelGroup = ''
+    this.channel = null
+    this.initializingSince = null
+    this.resetTable()
+    this.clearTimer('keepalive')
+    this.keepaliveTarget = null
+    this.onUpdate(this.snapshot(null))
+    this.startDiscovery()
+  }
+
+  armHealthClock () {
+    if (this.timers.silence) return
+    this.timers.silence = every(() => this.publishClock(), this.silenceIntervalMs)
   }
 
   resetTable () {

@@ -157,7 +157,7 @@ test('discovery sign-in, channel status, and a refused channel', async () => {
 
 test('names completion brings the radio online and silence drops it', async () => {
   const udp = fakeUdp()
-  const radio = session(udp, { heardTimeoutMs: 500 })
+  const radio = session(udp, { heardTimeoutMs: 500, noResponseTimeoutMs: 500 })
   radio.start()
   const reply = protocol.encodeFrame({
     srcIp: '192.168.1.146',
@@ -176,6 +176,52 @@ test('names completion brings the radio online and silence drops it', async () =
   assert.equal(radio.getState().radio.status, 'offline')
   assert.equal(radio.getState().channel, null)
   assert.ok(udp.sent.length > before)
+  radio.stop()
+})
+
+test('initializing without radio traffic rediscovers', async () => {
+  const udp = fakeUdp()
+  const radio = session(udp, { noResponseTimeoutMs: 40, namesReadyDelayMs: 60000 })
+  radio.start()
+  const reply = protocol.encodeFrame({
+    srcIp: '192.168.1.146',
+    dstIp: '192.168.1.25',
+    marker: 0x00,
+    command: protocol.Command.ACK,
+    body: Buffer.from([0x03, 0xff, 0x00, 0x00]),
+  })
+  radio.inject('discovery', reply, { address: '192.168.1.146', port: 50000 })
+  assert.equal(radio.getState().radio.status, 'Initializing RS-M500')
+  const before = udp.sent.length
+  radio.lastHeard = Date.now() - 10000
+  await wait(80)
+  assert.equal(radio.getState().radio.status, 'offline')
+  assert.ok(udp.sent.length > before)
+  radio.stop()
+})
+
+test('stuck initializing with status but no names goes online', async () => {
+  const udp = fakeUdp()
+  const radio = session(udp, { namesReadyDelayMs: 20, heardTimeoutMs: 500 })
+  radio.start()
+  const reply = protocol.encodeFrame({
+    srcIp: '192.168.1.146',
+    dstIp: '192.168.1.25',
+    marker: 0x00,
+    command: protocol.Command.ACK,
+    body: Buffer.from([0x03, 0xff, 0x00, 0x00]),
+  })
+  radio.inject('discovery', reply, { address: '192.168.1.146', port: 50000 })
+  const status = protocol.encodeStatus('192.168.1.146', '192.168.1.25', 180, {
+    squelch: 3,
+    busy: false,
+    power: 0x0f,
+  })
+  radio.inject('control', status, { address: '192.168.1.146', port: 50003 })
+  assert.equal(radio.getState().channel.nr, 60)
+  assert.equal(radio.getState().radio.status, 'Initializing RS-M500')
+  await wait(80)
+  assert.equal(radio.getState().radio.status, 'online')
   radio.stop()
 })
 

@@ -20,6 +20,7 @@ With the plugin installed, Signal K serves the remote at `/signalk-icom-m510e-pl
 ## Webapp states
 
 - **Disconnected.** The radio is offline. The buttons do not drive it.
+- If the radio stops answering for two minutes while Initializing or online, the plugin rediscovers and signs in again.
 - **Connected.** This webapp has the buttons and push-to-talk, and it hears the audio.
 - **Following.** Another webapp has the buttons and push-to-talk. This one still hears the audio and can rewind its own buffer. Take over moves the buttons and push-to-talk here and releases the other webapp's push-to-talk. Scan and auto follow keep running; they belong to the radio.
 - **Locked.** This phone's buttons are blocked so they are not pressed by accident. The screen stays awake either way. Other webapps are unchanged.
@@ -96,7 +97,7 @@ curl -H "Content-Type: application/json" -X PUT \
 | `communication.vhf.intercom` | `true`, `talk`, or `begin` starts; anything else ends |
 | `communication.vhf.autofollow` | `toggle`, or `1` / `true` / `on` |
 | `communication.vhf.marked` | `toggle` for the active channel number |
-| `communication.vhf.scanMode` | `all`, `marked`, `favourites`, or `off` |
+| `communication.vhf.scanMode` | `all`, `marked`, `favourites`, or `off` (same mode again is a no-op; only `off` stops) |
 | `communication.vhf.fav` | `toggle` |
 
 Auto follow reads the nearest station from the path set in the plugin config (`resources.vhfdata.nearest.0` by default). That value is the JSON object published by the [VHFinfo plugin](https://github.com/htool/vhfinfo). Its `channel` field is used, and a list such as `12/16` tunes the first channel.
